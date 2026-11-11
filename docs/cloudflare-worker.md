@@ -1,100 +1,98 @@
-# Cloudflare Worker Ingestion Pipeline
+# Cloudflare Worker Deployment & Architecture
 
-## Purpose
-The Cloudflare Worker serves as a secure, serverless bridge between field ESP32 stations and the GitHub repository (`kreier/T18`). It prevents the ESP32 from holding GitHub write tokens and handles aggregation into monthly JSON files.
-
----
-
-## Endpoint Specification
-
-### `POST /ingest`
-
-#### Request Headers
-```http
-POST /ingest HTTP/1.1
-Host: t18-worker.<subdomain>.workers.dev
-Authorization: Bearer <INGESTION_SECRET>
-Content-Type: application/json
-```
-
-#### Request Payload
-```json
-{
-  "station_id": "C-703",
-  "device_id": "A4CF129D1234",
-  "firmware_version": "1.0.0",
-  "battery_mv": 3950,
-  "records": [
-    {
-      "timestamp": 1731333600,
-      "ssid": "School-Guest",
-      "rssi": -65,
-      "channel": 6,
-      "assoc_ms": 1420,
-      "dhcp_ms": 780,
-      "ip": "192.168.10.45",
-      "targets": {
-        "google": 45,
-        "fast": 88,
-        "one_one_one_one": 24,
-        "cloudflare": 31
-      },
-      "status": "ok"
-    }
-  ]
-}
-```
-
-#### Response
-- `200 OK`: Data accepted and committed to GitHub.
-```json
-{
-  "status": "success",
-  "records_ingested": 144,
-  "committed_file": "data/C-703/2026-11.json",
-  "commit_sha": "d7a8e1b..."
-}
-```
-- `401 Unauthorized`: Invalid or missing Bearer token.
-- `400 Bad Request`: Invalid payload schema or malformed JSON.
-- `500 Internal Error`: GitHub API failure or rate limit.
+The Cloudflare Worker functions as both:
+1. **Real-time Live Telemetry Buffer (Cloudflare KV)**: Stores hourly station health heartbeats (battery voltage, signal RSSI, visible networks count, health status) so the dashboard can inspect live status throughout the day without incurring GitHub API rate limits.
+2. **Daily Batch Git Committer**: Merges and commits the 24-hour spool into GitHub (`data/<station_id>/<YYYY-MM>.json` and `data/stations.json`) during the early morning upload window.
 
 ---
 
-## Processing Flow in Worker
+## 1. Step-by-Step Deployment Guide
 
-1. **Token Authentication**: Compares the incoming `Authorization` header against the worker environment secret `AUTH_TOKEN`.
-2. **Hourly Aggregation**:
-   - Groups records into 1-hour buckets.
-   - For each hour, calculates:
-     - Total samples & successful samples
-     - Average Wi-Fi association time
-     - Average DHCP time
-     - Average HTTP latency across targets
-     - Worst failure state (e.g., if 1 sample failed, hourly status = `orange`; if all failed, status = `red`)
-     - Battery voltage and average RSSI
-3. **GitHub Repository Sync**:
-   - Fetches the existing `data/<station_id>/<YYYY-MM>.json` file using GitHub REST API:
-     `GET https://api.github.com/repos/kreier/T18/contents/data/<station>/<YYYY-MM>.json`
-   - Parses existing hours, merges/overwrites incoming hourly data.
-   - Updates `data/stations.json` with `last_seen`, `battery_mv`, and station metadata.
-   - Commits updated files using a GitHub Fine-Grained Personal Access Token (`GITHUB_TOKEN` secret) via `PUT /repos/:owner/:repo/contents/:path`.
+### Prerequisites
+- [Node.js](https://nodejs.org/) installed (v18+).
+- A free [Cloudflare Account](https://dash.cloudflare.com/).
+- A GitHub Fine-Grained Personal Access Token with `contents:write` on `kreier/T18`.
 
----
+### Step 1: Install Dependencies
+Inside the `worker/` directory:
+```bash
+cd worker
+npm install
+```
 
-## Worker Configuration (`wrangler.toml`)
+### Step 2: Authenticate Wrangler
+Log in to your Cloudflare account from the CLI:
+```bash
+npx wrangler login
+```
 
+### Step 3: Create the Cloudflare KV Namespace
+Create the KV store for holding live hourly station telemetry:
+```bash
+npx wrangler kv namespace create TELEMETRY_KV
+```
+This command outputs a block similar to:
 ```toml
-name = "t18-telemetry-ingest"
-main = "src/index.ts"
-compatibility_date = "2024-11-01"
-
-[vars]
-GITHUB_OWNER = "kreier"
-GITHUB_REPO = "T18"
-GITHUB_BRANCH = "main"
-
-# Secrets configured via `wrangler secret put`:
-# - AUTH_TOKEN
-# - GITHUB_TOKEN
+[[kv_namespaces]]
+binding = "TELEMETRY_KV"
+id = "a1b2c3d4e5f67890abcdef1234567890"
 ```
+Copy and paste this snippet directly into your `worker/wrangler.toml`.
+
+### Step 4: Configure Cloudflare Worker Secrets
+Store your secrets securely in Cloudflare:
+
+1. **Station Pre-Shared Bearer Key**:
+   ```bash
+   npx wrangler secret put AUTH_TOKEN
+   # Enter your chosen secret token (e.g. a strong random string)
+   ```
+2. **GitHub Personal Access Token**:
+   ```bash
+   npx wrangler secret put GITHUB_TOKEN
+   # Paste your GitHub Fine-Grained PAT with contents:write permission
+   ```
+
+### Step 5: Deploy the Worker
+Deploy to Cloudflare's edge network:
+```bash
+npx wrangler deploy
+```
+Wrangler will output your live worker URL:
+`https://t18-telemetry-worker.<your-subdomain>.workers.dev`
+
+Enter this URL into the T18 station during Soft-AP configuration mode!
+
+---
+
+## 2. API Endpoints
+
+### `POST /heartbeat` (Hourly Live Telemetry)
+Sent by the T18 station once per hour when connected.
+- **Header**: `Authorization: Bearer <AUTH_TOKEN>`
+- **Payload**:
+  ```json
+  {
+    "station_id": "C-703",
+    "timestamp": 1731362400,
+    "battery_mv": 3950,
+    "battery_pct": 82,
+    "rssi": -65,
+    "visible_networks": 14,
+    "status": "green",
+    "last_assoc_ms": 1180,
+    "last_dhcp_ms": 720,
+    "last_http_latency_ms": 42
+  }
+  ```
+- **Storage**: Cached directly in Cloudflare KV under key `live:<station_id>` with a 48-hour expiration TTL and appended to `buffer:<station_id>:<YYYY-MM-DD>`.
+
+### `GET /live` (Public Real-time Status)
+Used by the web dashboard to display live station health.
+- **Query Params**: `?station=C-703` (or omit to get all registered stations).
+- **CORS**: Fully enabled for GitHub Pages (`Access-Control-Allow-Origin: *`).
+
+### `POST /ingest` (Daily 24-Hour Batch Upload)
+Sent by the T18 station once per day during the early morning upload window (19:00–21:00 UTC / 02:00–04:00 ICT).
+- **Header**: `Authorization: Bearer <AUTH_TOKEN>`
+- **Action**: Aggregates hourly rollups (Green, Orange, Purple, Red) and commits to `data/<station>/<YYYY-MM>.json` via the GitHub REST API.

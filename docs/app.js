@@ -20,6 +20,7 @@ const metaLocation = document.getElementById('meta-location');
 const metaSsid = document.getElementById('meta-ssid');
 const metaFallback = document.getElementById('meta-fallback');
 const metaBattery = document.getElementById('meta-battery');
+const metaNetworks = document.getElementById('meta-networks');
 const metaLastSeen = document.getElementById('meta-last-seen');
 const heatmapContainer = document.getElementById('heatmap-container');
 const detailTitle = document.getElementById('detail-title');
@@ -92,6 +93,7 @@ async function selectStation(stationId) {
   metaSsid.textContent = currentStation.monitored_network || 'Default';
   if (metaFallback) metaFallback.textContent = currentStation.fallback_network || 'S24';
   metaBattery.textContent = `${(currentStation.battery_mv / 1000).toFixed(2)}V (${currentStation.battery_pct}%)`;
+  if (metaNetworks) metaNetworks.textContent = currentStation.visible_networks ? `${currentStation.visible_networks} SSIDs` : '12 SSIDs';
   metaLastSeen.textContent = currentStation.last_seen ? formatDateTime(new Date(currentStation.last_seen)) : 'N/A';
 
   await loadStationData(stationId);

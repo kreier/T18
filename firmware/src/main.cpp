@@ -8,6 +8,7 @@
  * - Light sleep cycle (default: 10 min) with clock continuity
  * - Sequential Wi-Fi association & DHCP benchmarking (15s / 10s timeouts)
  * - HTTP target latency probes (3s timeout): 1.1.1.1, Google, Fast.com, Cloudflare
+ * - Hourly Live Heartbeat to Cloudflare Worker (battery, RSSI, status, visible networks count)
  * - Offline millis() buffering with retroactive NTP timestamp mapping
  * - Daily ingestion batch upload (19:00 - 21:00 UTC) with fallback network
  */
@@ -35,7 +36,17 @@ static const unsigned long TIMEOUT_ASSOC_MS = 15000;
 static const unsigned long TIMEOUT_DHCP_MS  = 10000;
 static const unsigned long TIMEOUT_HTTP_MS  = 3000;
 
-// ---------- Configuration Model ----------
+// ---------- Data Models & Structures ----------
+
+// Target Latency Telemetry Model
+struct TargetLatency {
+  int google = -1;
+  int fast = -1;
+  int one_one_one_one = -1;
+  int cloudflare = -1;
+};
+
+// Configuration Model
 struct StationConfig {
   char station_id[32]        = "C-703";
   char monitored_ssid[32]    = "School-Guest";
@@ -57,10 +68,20 @@ static bool ntpSynchronized       = false;
 static time_t ntpBaseEpoch        = 0;
 static unsigned long ntpBaseMillis = 0;
 static int lastUploadDay          = -1;
+static int lastHeartbeatHour      = -1;
 
 // Web & DNS servers for AP mode
 WebServer server(80);
 DNSServer dnsServer;
+
+// Forward Declarations (for Arduino IDE preprocessor compatibility)
+void appendRecordToSpool(unsigned long epochSec, unsigned long relMillis, int rssi, int ch,
+                        unsigned long assoc_ms, unsigned long dhcp_ms, const char* ip,
+                        const TargetLatency& targets, int errMask, float vbat);
+void sendHourlyHeartbeat(float vbat, int rssi, unsigned long assoc_ms, unsigned long dhcp_ms,
+                         const TargetLatency& targets, int errMask, time_t epochSec);
+void retroactivelyMapSpoolTimestamps();
+int  probeHttpTarget(const char* url);
 
 // ---------- Helper Functions ----------
 
@@ -250,13 +271,6 @@ void startSoftAP() {
 
 // ---------- Telemetry Benchmark & Spooling ----------
 
-struct TargetLatency {
-  int google = -1;
-  int fast = -1;
-  int one_one_one_one = -1;
-  int cloudflare = -1;
-};
-
 int probeHttpTarget(const char* url) {
   HTTPClient http;
   http.setTimeout(TIMEOUT_HTTP_MS);
@@ -307,7 +321,6 @@ void syncNTP() {
       ntpBaseMillis   = millis();
       Serial.printf("[NTP] Clock synchronized: %ld UTC\n", (long)now);
 
-      // Retroactively map any pending records that were logged before NTP sync
       retroactivelyMapSpoolTimestamps();
     }
   }
@@ -353,6 +366,64 @@ void retroactivelyMapSpoolTimestamps() {
   } else {
     LittleFS.remove("/spool/temp.jsonl");
   }
+}
+
+// Send lightweight hourly heartbeat to Cloudflare Worker
+void sendHourlyHeartbeat(float vbat, int rssi, unsigned long assoc_ms, unsigned long dhcp_ms,
+                         const TargetLatency& targets, int errMask, time_t epochSec) {
+  // Quick Wi-Fi scan to count visible networks
+  int visible = WiFi.scanNetworks(false, true);
+  WiFi.scanDelete();
+
+  int totalLatency = 0;
+  int countLatency = 0;
+  if (targets.one_one_one_one > 0) { totalLatency += targets.one_one_one_one; countLatency++; }
+  if (targets.google > 0)          { totalLatency += targets.google; countLatency++; }
+  if (targets.fast > 0)            { totalLatency += targets.fast; countLatency++; }
+  if (targets.cloudflare > 0)      { totalLatency += targets.cloudflare; countLatency++; }
+  int avgLatency = countLatency > 0 ? (totalLatency / countLatency) : 0;
+
+  const char* status = "green";
+  if (errMask != 0) {
+    status = (errMask == 1) ? "red" : "orange";
+  } else if (avgLatency > 150) {
+    status = "orange";
+  } else if (assoc_ms > 4000 || dhcp_ms > 3000) {
+    status = "purple";
+  }
+
+  // Derive heartbeat URL from worker_url (replace /ingest with /heartbeat)
+  String hbUrl = config.worker_url;
+  int idx = hbUrl.lastIndexOf('/');
+  if (idx > 0) {
+    hbUrl = hbUrl.substring(0, idx) + "/heartbeat";
+  }
+
+  JsonDocument doc;
+  doc["station_id"]           = config.station_id;
+  doc["timestamp"]            = epochSec;
+  doc["battery_mv"]           = (int)(vbat * 1000.0f);
+  doc["battery_pct"]          = batteryPercent(vbat);
+  doc["rssi"]                 = rssi;
+  doc["visible_networks"]     = visible;
+  doc["status"]               = status;
+  doc["last_assoc_ms"]        = assoc_ms;
+  doc["last_dhcp_ms"]         = dhcp_ms;
+  doc["last_http_latency_ms"] = avgLatency;
+
+  String payload;
+  serializeJson(doc, payload);
+
+  HTTPClient http;
+  http.setTimeout(4000);
+  http.begin(hbUrl);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", String("Bearer ") + config.auth_token);
+
+  int code = http.POST(payload);
+  http.end();
+  Serial.printf("[Heartbeat] Sent hourly ping to %s -> HTTP %d (networks: %d, battery: %.2fV)\n",
+                hbUrl.c_str(), code, visible, vbat);
 }
 
 void runMeasurement() {
@@ -401,6 +472,16 @@ void runMeasurement() {
       // Try NTP sync if not yet synchronized
       if (!ntpSynchronized) {
         syncNTP();
+      }
+
+      // Check if we should send an hourly heartbeat update
+      if (ntpSynchronized) {
+        time_t now = ntpBaseEpoch + (millis() - ntpBaseMillis) / 1000;
+        struct tm* ptm = gmtime(&now);
+        if (ptm && ptm->tm_hour != lastHeartbeatHour) {
+          sendHourlyHeartbeat(vbat, rssi, assoc_ms, dhcp_ms, targets, errMask, now);
+          lastHeartbeatHour = ptm->tm_hour;
+        }
       }
     } else {
       errMask |= 2; // DHCP timeout

@@ -7,6 +7,13 @@ GITHUB_OWNER = "kreier"
 GITHUB_REPO = "T18"
 GITHUB_BRANCH = "main"
 
-# Secrets to be configured via wrangler:
+# Cloudflare KV binding for real-time live telemetry & hourly buffer:
+# Run: npx wrangler kv namespace create TELEMETRY_KV
+# Then paste the generated id below:
+[[kv_namespaces]]
+binding = "TELEMETRY_KV"
+id = "4baa85710d8041fbb762e4b4cf305040"
+
+# Secrets configured via `wrangler secret put`:
 # wrangler secret put AUTH_TOKEN
 # wrangler secret put GITHUB_TOKEN
