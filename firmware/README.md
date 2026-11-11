@@ -1,42 +1,72 @@
 # T18 Station Firmware
 
-Firmware for TTGO T18 (ESP32 T-Energy v3.0) battery-powered Wi-Fi reliability station.
+Autonomous Wi-Fi reliability monitoring station firmware for the **LilyGo TTGO T18 (T-Energy v3.0)** ESP32 board.
 
-## Features
-- **Cold Boot Soft-AP Mode**: Starts captive portal AP for 60 seconds on cold boot; remains on if connected by user until reboot.
-- **Web Configuration Portal**:
-  - Scan local 2.4 GHz Wi-Fi networks.
-  - Set station name (e.g. `C-703`).
-  - Configure monitored SSIDs and passwords.
-  - Configure emergency/fallback Wi-Fi (e.g. `S24` mobile hotspot) for daily synchronization.
-  - Set measurement interval (default: 10 minutes).
-- **Probing Engine**:
-  - Accurate millisecond benchmark of Wi-Fi Association time.
-  - DHCP lease acquisition time measurement.
-  - Response time and HTTP code measurement for Google, Fast.com, 1.1.1.1, and Cloudflare.
-  - Battery voltage sampling on `IO35`.
-- **Low Power Sleep**:
-  - Enters deep sleep / light sleep between measurement cycles.
-  - Spools telemetry into LittleFS non-volatile memory.
-- **Daily Ingestion Sync**:
-  - Connects to primary or fallback Wi-Fi once per day.
-  - Syncs internal RTC via SNTP.
-  - Posts pending telemetry batch to Cloudflare Worker.
+---
 
-## Pin Assignment
-- **IO5**: Blue LED
-- **IO35**: Battery Voltage Divider (100k/100k to GND, factor 2.0x)
-- **EN**: Reset
-- **IO0**: BOOT button (hold down during boot to force Soft-AP mode)
+## What Software to Upload to the T18?
 
-## Build & Flash
-### Using PlatformIO:
-```bash
-pio run -t upload
-```
+Upload the main firmware source code located at:
+👉 **[`firmware/src/main.cpp`](src/main.cpp)**
 
-### Using Arduino IDE:
-1. Select Board: "ESP32 Dev Module"
-2. Upload Speed: 115200 or 921600
-3. Flash Size: 4MB
-4. Partition Scheme: "Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)" or "No OTA (2MB APP/2MB SPIFFS)"
+### Key Capabilities Included:
+1. **Cold-Boot Configuration Portal**:
+   - Launches an open Soft-AP (`T18-Setup-XXXX`) on `192.168.4.1` for 60 seconds.
+   - If you connect with a smartphone or laptop, the timeout is canceled, allowing you to configure station name, monitored networks, fallback Wi-Fi (`S24`), interval, and Cloudflare Worker URL.
+   - Settings are committed to LittleFS (`/config.json`).
+2. **Light Sleep Lifecycle**:
+   - Wakes every 10 minutes (configurable), retaining memory and clock continuity.
+   - Bypasses Soft-AP entirely on routine measurement wakes.
+3. **Sequential Probing Engine**:
+   - Wi-Fi association speed benchmark (15s timeout).
+   - DHCP lease acquisition speed benchmark (10s timeout).
+   - Latency to 4 HTTP targets (3s timeout each): `1.1.1.1`, Google, Fast.com, Cloudflare.
+   - Battery voltage and percentage sampling via `IO35` divider.
+4. **Hourly Live Heartbeat (Cloudflare KV)**:
+   - Once per hour, sends live telemetry (`POST /heartbeat`) containing battery voltage, signal strength (RSSI), status, and number of visible 2.4 GHz networks.
+5. **Daily Batch Upload & Fallback Network**:
+   - Once per day (19:00–21:00 UTC / 02:00–04:00 Vietnam time), posts all buffered 24h records to Cloudflare Worker.
+   - Automatically switches to the fallback network (`S24`) if the monitored network fails.
+
+---
+
+## Flashing Instructions
+
+### Option 1: PlatformIO (Recommended)
+1. Install [PlatformIO IDE](https://platformio.org/) in VS Code or CLI.
+2. Connect TTGO T18 via micro-USB.
+3. Build and upload:
+   ```bash
+   pio run -t upload
+   pio device monitor
+   ```
+
+### Option 2: Arduino IDE
+1. Open Arduino IDE (v2.x recommended).
+2. Install the **ESP32** board package (`esp32` by Espressif Systems) via Boards Manager.
+3. Install **ArduinoJson** (v7.x) via Library Manager.
+4. Open or copy `firmware/src/main.cpp` into a sketch folder `firmware/src/src.ino` (or rename to match folder name).
+5. Configure board settings under **Tools**:
+   - **Board**: `ESP32 Dev Module`
+   - **Upload Speed**: `921600` (or `115200`)
+   - **Flash Frequency**: `80MHz`
+   - **Partition Scheme**: `Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)` or `No OTA (2MB APP/2MB SPIFFS)`
+   - **Port**: Select the USB serial port (e.g., `/dev/ttyUSB0` or `COMx`)
+6. Click **Upload**.
+
+---
+
+## Initial Field Setup (First Boot)
+
+1. Insert 18650 battery or plug in USB.
+2. The blue LED (`IO5`) will light up briefly as Soft-AP starts.
+3. On your phone or laptop, connect to Wi-Fi network: **`T18-Setup-XXXX`**.
+4. Open browser to **`http://192.168.4.1/`** (or wait for captive portal prompt).
+5. Enter:
+   - **Station ID**: e.g., `C-703`
+   - **Monitored Wi-Fi SSID & Password**
+   - **Fallback Wi-Fi SSID & Password**: e.g., `S24` / `12345678`
+   - **Cloudflare Worker Ingest URL**: `https://<your-worker>.workers.dev/ingest`
+   - **Device Bearer Token**: Match your `AUTH_TOKEN` secret in Cloudflare.
+6. Click **Save & Reboot Station**.
+7. The station will reboot, begin measuring every 10 minutes, and enter light sleep between cycles.

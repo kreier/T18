@@ -1,9 +1,12 @@
 /**
- * Cloudflare Worker: T18 Network Telemetry Ingestion Endpoint
+ * Cloudflare Worker: T18 Network Telemetry Ingestion & Live Buffer
  *
- * Receives batched records from ESP32 stations (including multi-day backlogs),
- * aggregates hourly rollups (Green, Orange, Purple, Red),
- * and commits updates directly into the kreier/T18 GitHub repository.
+ * Capabilities:
+ * - POST /heartbeat : Receives hourly live telemetry (battery mV, RSSI, status, visible networks count)
+ *                     and caches in Cloudflare KV without hitting GitHub API limits.
+ * - GET /live       : Returns real-time live telemetry for stations (supports CORS for GitHub Pages).
+ * - POST /ingest    : Receives daily multi-day batches, aggregates hourly rollups (Green, Orange, Purple, Red),
+ *                     and commits updates directly to kreier/T18 on GitHub.
  */
 
 export interface Env {
@@ -12,10 +15,11 @@ export interface Env {
   GITHUB_OWNER: string;
   GITHUB_REPO: string;
   GITHUB_BRANCH: string;
+  TELEMETRY_KV?: KVNamespace;
 }
 
 interface TelemetryRecord {
-  timestamp: number; // Unix epoch in seconds
+  timestamp: number;
   ssid: string;
   rssi?: number;
   channel?: number;
@@ -31,6 +35,19 @@ interface TelemetryRecord {
   };
   status?: string;
   battery_mv?: number;
+}
+
+interface HeartbeatPayload {
+  station_id: string;
+  timestamp: number;
+  battery_mv: number;
+  battery_pct: number;
+  rssi: number;
+  visible_networks: number;
+  status: 'green' | 'orange' | 'purple' | 'red';
+  last_assoc_ms: number;
+  last_dhcp_ms: number;
+  last_http_latency_ms: number;
 }
 
 interface IngestPayload {
@@ -50,6 +67,7 @@ interface HourlySummary {
   status: 'green' | 'orange' | 'purple' | 'red';
   avg_rssi?: number;
   avg_battery_mv?: number;
+  visible_networks?: number;
 }
 
 interface MonthFileContent {
@@ -58,176 +76,255 @@ interface MonthFileContent {
   hours: Record<string, HourlySummary>;
 }
 
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+};
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
+    // Handle CORS preflight
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { headers: CORS_HEADERS });
+    }
+
+    // Health check
     if (request.method === 'GET' && url.pathname === '/') {
-      return new Response(JSON.stringify({ service: 'T18 Telemetry Ingest', status: 'healthy', version: '1.0.0' }), {
-        headers: { 'Content-Type': 'application/json' },
+      return new Response(JSON.stringify({ service: 'T18 Telemetry Gateway', status: 'healthy', version: '1.1.0' }), {
+        headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       });
     }
 
-    if (request.method !== 'POST' || url.pathname !== '/ingest') {
-      return new Response('Not Found', { status: 404 });
-    }
-
-    // Authenticate device token via Bearer header
-    const authHeader = request.headers.get('Authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return new Response(JSON.stringify({ error: 'Missing Bearer authorization' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    const token = authHeader.replace('Bearer ', '').trim();
-    if (token !== env.AUTH_TOKEN) {
-      return new Response(JSON.stringify({ error: 'Unauthorized: Invalid token' }), {
-        status: 403,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    try {
-      const payload: IngestPayload = await request.json();
-      if (!payload.station_id || !Array.isArray(payload.records) || payload.records.length === 0) {
-        return new Response(JSON.stringify({ error: 'Payload must contain station_id and non-empty records array' }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
+    // -----------------------------------------------------------------------
+    // GET /live - Real-time Live Telemetry Query (Cached in KV)
+    // -----------------------------------------------------------------------
+    if (request.method === 'GET' && url.pathname === '/live') {
+      if (!env.TELEMETRY_KV) {
+        return new Response(JSON.stringify({ error: 'Cloudflare KV is not configured on this worker' }), {
+          status: 501,
+          headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
         });
       }
 
-      // Group records into hourly buckets (UTC ISO strings)
-      // Supports multi-day batches spanning across days or month boundaries
-      const hourlyBuckets = new Map<string, TelemetryRecord[]>();
-
-      for (const rec of payload.records) {
-        if (!rec.timestamp || rec.timestamp < 1000000000) {
-          // Skip invalid or unmapped timestamps
-          continue;
-        }
-
-        const date = new Date(rec.timestamp * 1000);
-        date.setUTCMinutes(0, 0, 0);
-        const isoHour = date.toISOString().replace(/:\d\d\.\d\d\dZ$/, ':00:00Z');
-
-        const bucket = hourlyBuckets.get(isoHour) || [];
-        bucket.push(rec);
-        hourlyBuckets.set(isoHour, bucket);
-      }
-
-      if (hourlyBuckets.size === 0) {
-        return new Response(JSON.stringify({ error: 'No valid timestamped records found in batch' }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
+      const requestedStation = url.searchParams.get('station');
+      if (requestedStation) {
+        const data = await env.TELEMETRY_KV.get(`live:${requestedStation}`, { type: 'json' });
+        return new Response(JSON.stringify(data || { station: requestedStation, status: 'offline' }), {
+          headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
         });
       }
 
-      // Compute hourly rollup aggregates
-      const aggregatedHours: Record<string, HourlySummary> = {};
-      for (const [isoHour, records] of hourlyBuckets.entries()) {
-        const samples = records.length;
-        const successful = records.filter(r => r.assoc_ms > 0 && r.dhcp_ms > 0 && (!r.status || r.status === 'ok')).length;
-
-        let totalAssoc = 0;
-        let totalDhcp = 0;
-        let totalLatency = 0;
-        let latencyCount = 0;
-        let totalRssi = 0;
-        let rssiCount = 0;
-        let totalVbat = 0;
-
-        for (const r of records) {
-          totalAssoc += r.assoc_ms || 0;
-          totalDhcp += r.dhcp_ms || 0;
-          if (r.targets) {
-            Object.values(r.targets).forEach(lat => {
-              if (typeof lat === 'number' && lat > 0) {
-                totalLatency += lat;
-                latencyCount++;
-              }
-            });
-          }
-          if (typeof r.rssi === 'number') {
-            totalRssi += r.rssi;
-            rssiCount++;
-          }
-          if (r.battery_mv) totalVbat += r.battery_mv;
-        }
-
-        const avg_assoc_ms = successful > 0 ? Math.round(totalAssoc / successful) : 0;
-        const avg_dhcp_ms = successful > 0 ? Math.round(totalDhcp / successful) : 0;
-        const avg_http_latency_ms = latencyCount > 0 ? Math.round(totalLatency / latencyCount) : 0;
-
-        // Apply health classification rules:
-        // - Red: 0 successful connections
-        // - Orange: 1 or more failures, or high HTTP latency (> 150ms)
-        // - Purple: Connection succeeded, but association (> 4000ms) or DHCP (> 3000ms) had high delay
-        // - Green: All probes fast and successful
-        let status: 'green' | 'orange' | 'purple' | 'red' = 'green';
-        if (successful === 0) {
-          status = 'red';
-        } else if (successful < samples || avg_http_latency_ms > 150) {
-          status = 'orange';
-        } else if (avg_assoc_ms > 4000 || avg_dhcp_ms > 3000) {
-          status = 'purple';
-        }
-
-        aggregatedHours[isoHour] = {
-          samples,
-          successful,
-          avg_assoc_ms,
-          avg_dhcp_ms,
-          avg_http_latency_ms,
-          status,
-          avg_rssi: rssiCount > 0 ? Math.round(totalRssi / rssiCount) : undefined,
-          avg_battery_mv: samples > 0 && totalVbat > 0 ? Math.round(totalVbat / samples) : payload.battery_mv,
-        };
+      // List all live stations
+      const list = await env.TELEMETRY_KV.list({ prefix: 'live:' });
+      const results: Record<string, any> = {};
+      for (const key of list.keys) {
+        const stId = key.name.replace('live:', '');
+        const val = await env.TELEMETRY_KV.get(key.name, { type: 'json' });
+        if (val) results[stId] = val;
       }
 
-      // Group hourly summaries by month (YYYY-MM)
-      const updatesByMonth = new Map<string, Record<string, HourlySummary>>();
-      for (const [isoHour, summary] of Object.entries(aggregatedHours)) {
-        const ym = isoHour.slice(0, 7);
-        const group = updatesByMonth.get(ym) || {};
-        group[isoHour] = summary;
-        updatesByMonth.set(ym, group);
+      return new Response(JSON.stringify(results), {
+        headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+      });
+    }
+
+    // Authenticate POST endpoints with Bearer token
+    if (request.method === 'POST') {
+      const authHeader = request.headers.get('Authorization');
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return new Response(JSON.stringify({ error: 'Missing Bearer authorization header' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        });
       }
 
-      // Commit to GitHub for each affected monthly partition
-      for (const [ym, hoursMap] of updatesByMonth.entries()) {
-        const filePath = `data/${payload.station_id}/${ym}.json`;
-        await updateGitHubFile(env, filePath, (existingContent: MonthFileContent | null) => {
-          const merged: MonthFileContent = existingContent || {
-            station: payload.station_id,
-            month: ym,
-            hours: {},
+      const token = authHeader.replace('Bearer ', '').trim();
+      if (token !== env.AUTH_TOKEN) {
+        return new Response(JSON.stringify({ error: 'Unauthorized: Invalid token' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        });
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // POST /heartbeat - Hourly Live Telemetry Update (Stored in KV)
+    // -----------------------------------------------------------------------
+    if (request.method === 'POST' && url.pathname === '/heartbeat') {
+      try {
+        const payload: HeartbeatPayload = await request.json();
+        if (!payload.station_id) {
+          return new Response(JSON.stringify({ error: 'Missing station_id' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+          });
+        }
+
+        if (env.TELEMETRY_KV) {
+          // Store live status with a 48-hour expiration
+          await env.TELEMETRY_KV.put(`live:${payload.station_id}`, JSON.stringify(payload), {
+            expirationTtl: 172800,
+          });
+
+          // Append to station's hourly buffer for the day
+          const date = new Date(payload.timestamp * 1000);
+          const dayKey = `buffer:${payload.station_id}:${date.toISOString().slice(0, 10)}`;
+          const existingBuffer = (await env.TELEMETRY_KV.get(dayKey, { type: 'json' })) as HeartbeatPayload[] | null || [];
+          existingBuffer.push(payload);
+          await env.TELEMETRY_KV.put(dayKey, JSON.stringify(existingBuffer), { expirationTtl: 604800 });
+        }
+
+        return new Response(JSON.stringify({ success: true, station: payload.station_id, cached: !!env.TELEMETRY_KV }), {
+          headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        });
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // POST /ingest - Daily Batch Ingestion (Commits to GitHub)
+    // -----------------------------------------------------------------------
+    if (request.method === 'POST' && url.pathname === '/ingest') {
+      try {
+        const payload: IngestPayload = await request.json();
+        if (!payload.station_id || !Array.isArray(payload.records) || payload.records.length === 0) {
+          return new Response(JSON.stringify({ error: 'Payload must contain station_id and non-empty records array' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+          });
+        }
+
+        // Group records into hourly buckets
+        const hourlyBuckets = new Map<string, TelemetryRecord[]>();
+
+        for (const rec of payload.records) {
+          if (!rec.timestamp || rec.timestamp < 1000000000) continue;
+
+          const date = new Date(rec.timestamp * 1000);
+          date.setUTCMinutes(0, 0, 0);
+          const isoHour = date.toISOString().replace(/:\d\d\.\d\d\dZ$/, ':00:00Z');
+
+          const bucket = hourlyBuckets.get(isoHour) || [];
+          bucket.push(rec);
+          hourlyBuckets.set(isoHour, bucket);
+        }
+
+        if (hourlyBuckets.size === 0) {
+          return new Response(JSON.stringify({ error: 'No valid timestamped records found in batch' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+          });
+        }
+
+        // Compute hourly rollup aggregates
+        const aggregatedHours: Record<string, HourlySummary> = {};
+        for (const [isoHour, records] of hourlyBuckets.entries()) {
+          const samples = records.length;
+          const successful = records.filter(r => r.assoc_ms > 0 && r.dhcp_ms > 0 && (!r.status || r.status === 'ok')).length;
+
+          let totalAssoc = 0;
+          let totalDhcp = 0;
+          let totalLatency = 0;
+          let latencyCount = 0;
+          let totalRssi = 0;
+          let rssiCount = 0;
+          let totalVbat = 0;
+
+          for (const r of records) {
+            totalAssoc += r.assoc_ms || 0;
+            totalDhcp += r.dhcp_ms || 0;
+            if (r.targets) {
+              Object.values(r.targets).forEach(lat => {
+                if (typeof lat === 'number' && lat > 0) {
+                  totalLatency += lat;
+                  latencyCount++;
+                }
+              });
+            }
+            if (typeof r.rssi === 'number') {
+              totalRssi += r.rssi;
+              rssiCount++;
+            }
+            if (r.battery_mv) totalVbat += r.battery_mv;
+          }
+
+          const avg_assoc_ms = successful > 0 ? Math.round(totalAssoc / successful) : 0;
+          const avg_dhcp_ms = successful > 0 ? Math.round(totalDhcp / successful) : 0;
+          const avg_http_latency_ms = latencyCount > 0 ? Math.round(totalLatency / latencyCount) : 0;
+
+          let status: 'green' | 'orange' | 'purple' | 'red' = 'green';
+          if (successful === 0) {
+            status = 'red';
+          } else if (successful < samples || avg_http_latency_ms > 150) {
+            status = 'orange';
+          } else if (avg_assoc_ms > 4000 || avg_dhcp_ms > 3000) {
+            status = 'purple';
+          }
+
+          aggregatedHours[isoHour] = {
+            samples,
+            successful,
+            avg_assoc_ms,
+            avg_dhcp_ms,
+            avg_http_latency_ms,
+            status,
+            avg_rssi: rssiCount > 0 ? Math.round(totalRssi / rssiCount) : undefined,
+            avg_battery_mv: samples > 0 && totalVbat > 0 ? Math.round(totalVbat / samples) : payload.battery_mv,
           };
+        }
 
-          Object.assign(merged.hours, hoursMap);
-          return merged;
-        }, `telemetry: sync ${payload.station_id} for ${ym}`);
+        // Group hourly summaries by month (YYYY-MM)
+        const updatesByMonth = new Map<string, Record<string, HourlySummary>>();
+        for (const [isoHour, summary] of Object.entries(aggregatedHours)) {
+          const ym = isoHour.slice(0, 7);
+          const group = updatesByMonth.get(ym) || {};
+          group[isoHour] = summary;
+          updatesByMonth.set(ym, group);
+        }
+
+        // Commit to GitHub for each affected monthly partition
+        for (const [ym, hoursMap] of updatesByMonth.entries()) {
+          const filePath = `data/${payload.station_id}/${ym}.json`;
+          await updateGitHubFile(env, filePath, (existingContent: MonthFileContent | null) => {
+            const merged: MonthFileContent = existingContent || {
+              station: payload.station_id,
+              month: ym,
+              hours: {},
+            };
+
+            Object.assign(merged.hours, hoursMap);
+            return merged;
+          }, `telemetry: sync ${payload.station_id} for ${ym}`);
+        }
+
+        // Update data/stations.json metadata in GitHub
+        await updateStationsRegistry(env, payload);
+
+        return new Response(JSON.stringify({
+          success: true,
+          station_id: payload.station_id,
+          records_processed: payload.records.length,
+          hours_aggregated: Object.keys(aggregatedHours).length,
+          months_affected: Array.from(updatesByMonth.keys()),
+        }), {
+          headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ error: err.message || 'Internal server error' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        });
       }
-
-      // Update stations index with latest metadata
-      await updateStationsRegistry(env, payload);
-
-      return new Response(JSON.stringify({
-        success: true,
-        station_id: payload.station_id,
-        records_processed: payload.records.length,
-        hours_aggregated: Object.keys(aggregatedHours).length,
-        months_affected: Array.from(updatesByMonth.keys()),
-      }), {
-        headers: { 'Content-Type': 'application/json' },
-      });
-    } catch (err: any) {
-      return new Response(JSON.stringify({ error: err.message || 'Internal server error' }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      });
     }
+
+    return new Response('Not Found', { status: 404, headers: CORS_HEADERS });
   },
 };
 
@@ -280,7 +377,7 @@ async function updateGitHubFile<T>(
 }
 
 /**
- * Update data/stations.json metadata
+ * Update data/stations.json metadata in GitHub
  */
 async function updateStationsRegistry(env: Env, payload: IngestPayload): Promise<void> {
   await updateGitHubFile<any[]>(
