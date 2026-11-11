@@ -1,0 +1,12 @@
+name = "t18-telemetry-worker"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+[vars]
+GITHUB_OWNER = "kreier"
+GITHUB_REPO = "T18"
+GITHUB_BRANCH = "main"
+
+# Secrets to be configured via wrangler:
+# wrangler secret put AUTH_TOKEN
+# wrangler secret put GITHUB_TOKEN

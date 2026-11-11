@@ -1,0 +1,86 @@
+{
+  "station": "C-703",
+  "month": "2026-11",
+  "hours": {
+    "2026-11-10T12:00:00Z": {
+      "samples": 6,
+      "successful": 6,
+      "avg_assoc_ms": 1180,
+      "avg_dhcp_ms": 720,
+      "avg_http_latency_ms": 38,
+      "status": "green",
+      "avg_rssi": -62,
+      "avg_battery_mv": 4010
+    },
+    "2026-11-10T13:00:00Z": {
+      "samples": 6,
+      "successful": 6,
+      "avg_assoc_ms": 1240,
+      "avg_dhcp_ms": 790,
+      "avg_http_latency_ms": 42,
+      "status": "green",
+      "avg_rssi": -63,
+      "avg_battery_mv": 4005
+    },
+    "2026-11-10T14:00:00Z": {
+      "samples": 6,
+      "successful": 5,
+      "avg_assoc_ms": 2890,
+      "avg_dhcp_ms": 1120,
+      "avg_http_latency_ms": 185,
+      "status": "orange",
+      "avg_rssi": -76,
+      "avg_battery_mv": 4000
+    },
+    "2026-11-10T15:00:00Z": {
+      "samples": 6,
+      "successful": 6,
+      "avg_assoc_ms": 4820,
+      "avg_dhcp_ms": 3400,
+      "avg_http_latency_ms": 82,
+      "status": "purple",
+      "avg_rssi": -79,
+      "avg_battery_mv": 3995
+    },
+    "2026-11-10T16:00:00Z": {
+      "samples": 6,
+      "successful": 0,
+      "avg_assoc_ms": 0,
+      "avg_dhcp_ms": 0,
+      "avg_http_latency_ms": 0,
+      "status": "red",
+      "avg_rssi": -92,
+      "avg_battery_mv": 3990
+    },
+    "2026-11-11T08:00:00Z": {
+      "samples": 6,
+      "successful": 6,
+      "avg_assoc_ms": 1150,
+      "avg_dhcp_ms": 680,
+      "avg_http_latency_ms": 35,
+      "status": "green",
+      "avg_rssi": -61,
+      "avg_battery_mv": 3985
+    },
+    "2026-11-11T09:00:00Z": {
+      "samples": 6,
+      "successful": 6,
+      "avg_assoc_ms": 1210,
+      "avg_dhcp_ms": 710,
+      "avg_http_latency_ms": 39,
+      "status": "green",
+      "avg_rssi": -62,
+      "avg_battery_mv": 3982
+    },
+    "2026-11-11T10:00:00Z": {
+      "samples": 6,
+      "successful": 6,
+      "avg_assoc_ms": 1300,
+      "avg_dhcp_ms": 750,
+      "avg_http_latency_ms": 44,
+      "status": "green",
+      "avg_rssi": -63,
+      "avg_battery_mv": 3980
+    }
+  }
+}

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>T18 Network Reliability Monitor</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <header class="header">
+      <div class="brand">
+        <div class="logo-badge">T18</div>
+        <div>
+          <h1>Network Reliability Monitor</h1>
+          <p class="subtitle">Distributed ESP32 Field Telemetry &bull; 53-Day Hourly Heatmap</p>
+        </div>
+      </div>
+
+      <div class="controls-wrapper">
+        <div class="control-group">
+          <label for="station-select">Station:</label>
+          <select id="station-select">
+            <option value="">Loading stations...</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label for="timezone-select">Timezone:</label>
+          <select id="timezone-select">
+            <option value="7" selected>Vietnam (ICT / UTC+7)</option>
+            <option value="0">UTC (Universal Time)</option>
+          </select>
+        </div>
+      </div>
+    </header>
+
+    <!-- Station Info Card -->
+    <section class="station-meta-grid" id="station-meta">
+      <div class="meta-card">
+        <span class="meta-label">Station ID / Name</span>
+        <span class="meta-value" id="meta-name">-</span>
+      </div>
+      <div class="meta-card">
+        <span class="meta-label">Location</span>
+        <span class="meta-value" id="meta-location">-</span>
+      </div>
+      <div class="meta-card">
+        <span class="meta-label">Monitored Wi-Fi</span>
+        <span class="meta-value mono" id="meta-ssid">-</span>
+      </div>
+      <div class="meta-card">
+        <span class="meta-label">Emergency Fallback</span>
+        <span class="meta-value mono" id="meta-fallback">-</span>
+      </div>
+      <div class="meta-card">
+        <span class="meta-label">Battery Level</span>
+        <span class="meta-value" id="meta-battery">-</span>
+      </div>
+      <div class="meta-card">
+        <span class="meta-label">Last Transmission</span>
+        <span class="meta-value" id="meta-last-seen">-</span>
+      </div>
+    </section>
+
+    <!-- Heatmap Section -->
+    <section class="heatmap-section">
+      <div class="section-header">
+        <div>
+          <h2>53-Day Reliability Heatmap (Hourly Aggregations)</h2>
+          <span class="tz-indicator" id="tz-indicator">Showing local time (UTC+7) &bull; 08:00–18:00 High Activity / Working Hours</span>
+        </div>
+        <div class="legend">
+          <span class="legend-item"><span class="box color-green"></span> Healthy (< 3s assoc, < 150ms HTTP)</span>
+          <span class="legend-item"><span class="box color-orange"></span> Degraded / 1 Failed</span>
+          <span class="legend-item"><span class="box color-purple"></span> Slow Assoc / DHCP Lag</span>
+          <span class="legend-item"><span class="box color-red"></span> Outage / No Link</span>
+          <span class="legend-item"><span class="box color-gray"></span> No Data / Offline</span>
+        </div>
+      </div>
+
+      <div class="heatmap-scroll-container">
+        <div class="heatmap-wrapper" id="heatmap-container">
+          <!-- Populated dynamically via JavaScript -->
+        </div>
+      </div>
+
+      <div class="heatmap-footer">
+        <span>&larr; 53 Days Ago</span>
+        <span id="footer-axis-note">Rows 00:00 &ndash; 23:00 (Local Time UTC+7)</span>
+        <span>Today &rarr;</span>
+      </div>
+    </section>
+
+    <!-- Metrics Deep Dive / Details Card on Click -->
+    <section class="detail-section" id="detail-card">
+      <div class="detail-content">
+        <h3 id="detail-title">Select an hour box to inspect telemetry details</h3>
+        <div class="detail-stats" id="detail-stats">
+          <p class="muted">Hover or click on any box in the heatmap above to view Wi-Fi connection time, DHCP latency, target ping response times, and battery levels.</p>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <p>Powered by <a href="https://github.com/kreier/T18" target="_blank" rel="noopener">T18 ESP32 Firmware</a>, Cloudflare Workers, and GitHub Pages.</p>
+    </footer>
+  </div>
+
+  <!-- Tooltip element -->
+  <div class="tooltip" id="tooltip"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

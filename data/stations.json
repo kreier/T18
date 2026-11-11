@@ -1,0 +1,28 @@
+[
+  {
+    "id": "C-703",
+    "name": "Room C-703",
+    "location": "Science Building C, Room 703",
+    "monitored_network": "School-Guest",
+    "fallback_network": "S24",
+    "probe_interval_min": 10,
+    "first_seen": "2026-10-01T08:00:00Z",
+    "last_seen": "2026-11-11T20:00:00Z",
+    "battery_mv": 3980,
+    "battery_pct": 82,
+    "status": "online"
+  },
+  {
+    "id": "LIB-2F",
+    "name": "Library 2nd Floor",
+    "location": "Library Building, East Study Area",
+    "monitored_network": "Campus-Open",
+    "fallback_network": "S24",
+    "probe_interval_min": 10,
+    "first_seen": "2026-10-15T10:00:00Z",
+    "last_seen": "2026-11-11T19:50:00Z",
+    "battery_mv": 4050,
+    "battery_pct": 88,
+    "status": "online"
+  }
+]
