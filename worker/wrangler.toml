@@ -8,7 +8,7 @@ GITHUB_REPO = "T18"
 GITHUB_BRANCH = "main"
 
 # Cloudflare KV binding for real-time live telemetry & hourly buffer:
-# Run: wrangler kv:namespace create TELEMETRY_KV
+# Run: npx wrangler kv namespace create TELEMETRY_KV
 # Then paste the generated id below:
 # [[kv_namespaces]]
 # binding = "TELEMETRY_KV"

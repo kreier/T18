@@ -29,7 +29,7 @@ npx wrangler login
 ### Step 3: Create the Cloudflare KV Namespace
 Create the KV store for holding live hourly station telemetry:
 ```bash
-npx wrangler kv:namespace create TELEMETRY_KV
+npx wrangler kv namespace create TELEMETRY_KV
 ```
 This command outputs a block similar to:
 ```toml
