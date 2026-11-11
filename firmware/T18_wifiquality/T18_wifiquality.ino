@@ -54,7 +54,7 @@ struct StationConfig {
   char fallback_ssid[32]     = "S24";
   char fallback_pass[64]     = "12345678";
   int  interval_min          = 10;
-  char worker_url[128]       = "https://t18-telemetry-worker.workers.dev/ingest";
+  char worker_url[128]       = "https://t18-telemetry-worker.matthias-kreier.workers.dev/ingest";
   char auth_token[64]        = "secret-station-token";
 };
 
