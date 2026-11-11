@@ -142,7 +142,14 @@ export default {
       }
 
       const token = authHeader.replace('Bearer ', '').trim();
-      if (token !== env.AUTH_TOKEN) {
+      const expectedToken = (env.AUTH_TOKEN || '').trim();
+      if (!expectedToken) {
+        return new Response(JSON.stringify({ error: 'Server misconfiguration: AUTH_TOKEN secret is not set' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        });
+      }
+      if (token !== expectedToken) {
         return new Response(JSON.stringify({ error: 'Unauthorized: Invalid token' }), {
           status: 403,
           headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
