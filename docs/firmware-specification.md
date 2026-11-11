@@ -3,7 +3,7 @@
 ## 1. Hardware Architecture (TTGO T18 / T-Energy v3.0)
 
 - **MCU**: ESP32-WROOM / ESP32-WROVER (240MHz, 4MB Flash)
-- **Power**: 18650 Li-ion battery + TP5400 Charge & 3.3V Step-down IC
+- **Power**: 18650 Li-ion battery (2500 mAh) + TP5400 Charge & 3.3V Step-down IC
 - **Battery Measurement**:
   - `IO35` (ADC1_CHANNEL_7) connected to a 100kΩ / 100kΩ voltage divider.
   - Calculation: $V_{\text{bat}} = 2.0 \times \text{ADC\_mV} / 1000$.
@@ -151,3 +151,29 @@ When the station boots fresh with no prior NTP sync (e.g. after a cold battery i
    - Posts all buffered records (including multi-day backlogs if previous days were offline).
    - Header: `Authorization: Bearer <INGESTION_SECRET>`.
    - On `HTTP 200 OK`: clears the pending spool file and updates `last_upload_epoch`.
+
+---
+
+## 7. Measured Power Consumption & Battery Autonomy (2500 mAh)
+
+Based on empirical measurements on the TTGO T18 board (TP5400, 3.7V–4.2V Li-ion cell):
+
+| Operating State | Measured Current | Notes |
+|:---|:---:|:---|
+| **Active (CPU 240MHz, Wi-Fi off, LED on)** | **45.10 mA** | Baseline CPU draw |
+| **Wi-Fi Active Scan / Association** | **150.00 mA** | Peak radio transmission & scanning |
+| **Active Wi-Fi off (LED on)** | **44.90 mA** | Post-disconnect radio shutoff |
+| **Light Sleep (`esp_light_sleep_start`)** | **1.91 mA** | CPU paused, RAM retained, LED off |
+| **Active Resume (LED on)** | **44.80 mA** | Post-sleep CPU resume |
+| **Deep Sleep (`esp_deep_sleep_start`)** | **0.17 mA** (170 µA) | CPU & RAM off, RTC slow clock only |
+
+### Runtime Projections on a 2500 mAh 18650 Battery:
+- **Station in Light Sleep (10-minute probe cycle)**:
+  - Daily consumption: $\approx 65.9\text{ mAh/day}$ ($I_{\text{avg}} \approx 2.75\text{ mA}$).
+  - **Expected Runtime**: **~38 days (~5.5 weeks)**.
+- **Station in Deep Sleep (10-minute probe cycle)**:
+  - Daily consumption: $\approx 29.5\text{ mAh/day}$ ($I_{\text{avg}} \approx 1.23\text{ mA}$).
+  - **Expected Runtime**: **~85 days (~2.8 months)**.
+- **Pure Standby Shelf Life**:
+  - Light Sleep: **~54.5 days** (1,309 hours).
+  - Deep Sleep: **~612 days / 1.67 years** (14,705 hours).
