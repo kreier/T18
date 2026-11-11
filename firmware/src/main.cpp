@@ -36,7 +36,17 @@ static const unsigned long TIMEOUT_ASSOC_MS = 15000;
 static const unsigned long TIMEOUT_DHCP_MS  = 10000;
 static const unsigned long TIMEOUT_HTTP_MS  = 3000;
 
-// ---------- Configuration Model ----------
+// ---------- Data Models & Structures ----------
+
+// Target Latency Telemetry Model
+struct TargetLatency {
+  int google = -1;
+  int fast = -1;
+  int one_one_one_one = -1;
+  int cloudflare = -1;
+};
+
+// Configuration Model
 struct StationConfig {
   char station_id[32]        = "C-703";
   char monitored_ssid[32]    = "School-Guest";
@@ -64,8 +74,14 @@ static int lastHeartbeatHour      = -1;
 WebServer server(80);
 DNSServer dnsServer;
 
-// Forward Declarations
+// Forward Declarations (for Arduino IDE preprocessor compatibility)
+void appendRecordToSpool(unsigned long epochSec, unsigned long relMillis, int rssi, int ch,
+                        unsigned long assoc_ms, unsigned long dhcp_ms, const char* ip,
+                        const TargetLatency& targets, int errMask, float vbat);
+void sendHourlyHeartbeat(float vbat, int rssi, unsigned long assoc_ms, unsigned long dhcp_ms,
+                         const TargetLatency& targets, int errMask, time_t epochSec);
 void retroactivelyMapSpoolTimestamps();
+int  probeHttpTarget(const char* url);
 
 // ---------- Helper Functions ----------
 
@@ -254,13 +270,6 @@ void startSoftAP() {
 }
 
 // ---------- Telemetry Benchmark & Spooling ----------
-
-struct TargetLatency {
-  int google = -1;
-  int fast = -1;
-  int one_one_one_one = -1;
-  int cloudflare = -1;
-};
 
 int probeHttpTarget(const char* url) {
   HTTPClient http;
