@@ -21,11 +21,14 @@ Because the ESP32 utilizes **Light Sleep (`esp_light_sleep_start()`)**:
 - `loop()` controls the continuous probe & sleep sequence:
   1. Wake from light sleep (CPU resumes directly in `loop()`).
   2. Execute sequential measurement of monitored networks.
-  3. Append records to memory spool / LittleFS.
-  4. Check if current time falls within the daily upload window (19:00–21:00 UTC). If yes, upload batch.
-  5. Shut down Wi-Fi radio (`WiFi.mode(WIFI_OFF)`).
-  6. Enable timer wakeup (`esp_sleep_enable_timer_wakeup(interval_us)`).
-  7. Enter light sleep (`esp_light_sleep_start()`).
+  3. Append records to memory spool / LittleFS (`/spool/pending.jsonl`).
+  4. If newly setup station (`initial_submitted == false`), immediately submit initial telemetry to GitHub.
+  5. Check if old unsubmitted data exists from previous day(s) or missed windows. If yes, trigger catch-up upload.
+  6. Check if current time falls within the daily upload window (19:00–21:00 UTC). If yes, upload batch.
+  7. Confirm HTTP response from Cloudflare Worker (`code == 200` and `success: true`) before marking records in flash as submitted.
+  8. Shut down Wi-Fi radio (`WiFi.mode(WIFI_OFF)`).
+  9. Enable timer wakeup (`esp_sleep_enable_timer_wakeup(interval_us)`).
+  10. Enter light sleep (`esp_light_sleep_start()`).
 
 ```
                     ┌────────────────────────────┐
@@ -139,18 +142,28 @@ When the station boots fresh with no prior NTP sync (e.g. after a cold battery i
 
 ---
 
-## 6. Daily Upload & Fallback Routine
+## 6. Submission Lifecycle, Confirmation & Fallback Routine
 
-1. **Upload Window**:
+1. **Initial Setup Submission**:
+   - Immediately following new station configuration in the Soft-AP portal (or fresh deployment), the first measurement is posted to the Cloudflare Worker as the initial step.
+   - Allows instant confirmation and verification of station health and configuration on `https://kreier.github.io/T18` without waiting 24 hours.
+2. **Old Data / Backlog Catch-Up**:
+   - The firmware inspects `/spool/pending.jsonl` every cycle.
+   - If unsubmitted records from a previous day (`record_day < current_day`) or older than 20 hours are detected (e.g. from an outage or missed 2:00 AM window), an immediate catch-up upload is initiated without waiting for 19:00 UTC.
+3. **Daily Upload Window**:
    - Scheduled daily between **19:00 and 21:00 UTC** (which corresponds to **02:00 to 04:00 local Vietnam time / UTC+7**).
-   - Only triggers once per 24-hour cycle (tracked via `last_upload_epoch`).
-2. **Network Selection**:
+   - Only triggers once per 24-hour cycle (persisted in `/spool/state.json`).
+4. **Network Selection**:
    - Attempts connection to the primary monitored network.
    - If monitored network connection or HTTP POST fails, immediately switches to the configured **Fallback Network** (`S24` / `12345678`).
-3. **Payload Transmission**:
-   - Posts all buffered records (including multi-day backlogs if previous days were offline).
-   - Header: `Authorization: Bearer <INGESTION_SECRET>`.
-   - On `HTTP 200 OK`: clears the pending spool file and updates `last_upload_epoch`.
+5. **Two-Way Confirmation & Flash Commitment**:
+   - Posts buffered records to `POST /ingest` with `Authorization: Bearer <INGESTION_SECRET>`.
+   - The Cloudflare Worker validates the batch, commits to GitHub, and returns `HTTP 200` with `{"success": true, ...}`.
+   - **Only upon verified confirmation** (`success: true`) does the ESP32 mark records in flash as submitted:
+     - Pending records are appended to `/spool/submitted.jsonl` with `"sub": true`.
+     - `/spool/pending.jsonl` is removed.
+     - Persistent state is written to LittleFS `/spool/state.json`.
+   - If the upload fails or worker confirmation is missing, records remain marked as pending in flash for subsequent retry.
 
 ---
 
