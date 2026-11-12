@@ -10,7 +10,10 @@
  * - HTTP target latency probes (3s timeout): 1.1.1.1, Google, Fast.com, Cloudflare
  * - Hourly Live Heartbeat to Cloudflare Worker (battery, RSSI, status, visible networks count)
  * - Offline millis() buffering with retroactive NTP timestamp mapping
+ * - Initial submission to GitHub on station setup for immediate verification
+ * - Automatic backlog / catch-up check for unsubmitted old collected data
  * - Daily ingestion batch upload (19:00 - 21:00 UTC) with fallback network
+ * - Two-way confirmation: data marked submitted in flash only upon worker commit confirmation
  */
 
 #include <Arduino.h>
@@ -58,7 +61,15 @@ struct StationConfig {
   char auth_token[64]        = "secret-station-token";
 };
 
+// Persistent Spool Submission State Model
+struct SpoolState {
+  bool initial_submitted     = false;
+  time_t last_upload_epoch   = 0;
+  int  last_upload_day       = -1;
+};
+
 StationConfig config;
+SpoolState    spoolState;
 
 // State Tracking
 static bool apModeActive          = false;
@@ -67,7 +78,6 @@ static unsigned long apStartTime  = 0;
 static bool ntpSynchronized       = false;
 static time_t ntpBaseEpoch        = 0;
 static unsigned long ntpBaseMillis = 0;
-static int lastUploadDay          = -1;
 static int lastHeartbeatHour      = -1;
 
 // Web & DNS servers for AP mode
@@ -82,6 +92,15 @@ void sendHourlyHeartbeat(float vbat, int rssi, unsigned long assoc_ms, unsigned 
                          const TargetLatency& targets, int errMask, time_t epochSec);
 void retroactivelyMapSpoolTimestamps();
 int  probeHttpTarget(const char* url);
+void loadSpoolState();
+void saveSpoolState();
+void markSpoolAsSubmitted();
+void rotateSubmittedLog();
+bool hasUnsubmittedOldData();
+void checkUnsubmittedData();
+void checkDailyUpload();
+void checkInitialUpload();
+bool postSpoolToWorker(const char* ssid, const char* pass);
 
 // ---------- Helper Functions ----------
 
@@ -153,6 +172,48 @@ void saveConfig() {
   Serial.println("[FS] Configuration saved");
 }
 
+void loadSpoolState() {
+  if (!LittleFS.exists("/spool/state.json")) {
+    spoolState.initial_submitted = false;
+    spoolState.last_upload_epoch = 0;
+    spoolState.last_upload_day   = -1;
+    Serial.println("[SpoolState] /spool/state.json not found, using defaults (initial_submitted=false)");
+    return;
+  }
+
+  File f = LittleFS.open("/spool/state.json", "r");
+  if (!f) return;
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, f);
+  f.close();
+
+  if (!err) {
+    spoolState.initial_submitted = doc["initial_submitted"] | false;
+    spoolState.last_upload_epoch = doc["last_upload_epoch"] | (time_t)0;
+    spoolState.last_upload_day   = doc["last_upload_day"]   | -1;
+    Serial.printf("[SpoolState] Loaded state: initial_sub=%d, last_epoch=%ld, last_day=%d\n",
+                  spoolState.initial_submitted, (long)spoolState.last_upload_epoch, spoolState.last_upload_day);
+  }
+}
+
+void saveSpoolState() {
+  File f = LittleFS.open("/spool/state.json", "w");
+  if (!f) {
+    Serial.println("[SpoolState] Failed to open /spool/state.json for writing");
+    return;
+  }
+
+  JsonDocument doc;
+  doc["initial_submitted"] = spoolState.initial_submitted;
+  doc["last_upload_epoch"] = (unsigned long)spoolState.last_upload_epoch;
+  doc["last_upload_day"]   = spoolState.last_upload_day;
+
+  serializeJson(doc, f);
+  f.close();
+  Serial.println("[SpoolState] Saved state to /spool/state.json");
+}
+
 // ---------- Soft-AP Web Configuration Portal ----------
 
 const char PORTAL_HTML[] PROGMEM = R"HTML(
@@ -178,6 +239,7 @@ const char PORTAL_HTML[] PROGMEM = R"HTML(
   <div class="card">
     <h1>T18 Station Setup</h1>
     <div class="vbat">Battery: <strong>%VBAT% V (%BAT_PCT%%)</strong></div>
+    <div class="vbat" style="margin-top:6px;">Status: <strong>%SUB_STATUS%</strong></div>
     <form action="/save" method="POST">
       <label>Station ID / Location Name</label>
       <input type="text" name="station_id" value="%STATION_ID%" required>
@@ -205,7 +267,7 @@ const char PORTAL_HTML[] PROGMEM = R"HTML(
 
       <button type="submit" class="btn">Save & Reboot Station</button>
     </form>
-    <div class="info">Settings are committed to LittleFS. Soft-AP remains active until reboot.</div>
+    <div class="info">Settings are committed to LittleFS. After reboot, initial telemetry is sent directly to GitHub.</div>
   </div>
 </body>
 </html>
@@ -224,6 +286,18 @@ void handlePortalRoot() {
   html.replace("%INTERVAL%", String(config.interval_min));
   html.replace("%WORKER_URL%", config.worker_url);
   html.replace("%AUTH_TOKEN%", config.auth_token);
+
+  String subStatus = spoolState.initial_submitted ? "Initial upload completed" : "Initial upload pending";
+  if (spoolState.last_upload_epoch > 0) {
+    char timeBuf[32];
+    struct tm* ptm = gmtime(&spoolState.last_upload_epoch);
+    if (ptm) {
+      strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M UTC", ptm);
+      subStatus += String(" (Last: ") + timeBuf + ")";
+    }
+  }
+  html.replace("%SUB_STATUS%", subStatus);
+
   server.send(200, "text/html", html);
 }
 
@@ -238,6 +312,10 @@ void handlePortalSave() {
   if (server.hasArg("auth_token"))     strlcpy(config.auth_token,     server.arg("auth_token").c_str(),     sizeof(config.auth_token));
 
   saveConfig();
+
+  // Reset initial submission flag so freshly configured station immediately submits telemetry upon reboot
+  spoolState.initial_submitted = false;
+  saveSpoolState();
 
   server.send(200, "text/html", "<html><body style='font-family:sans-serif;background:#0f172a;color:#38bdf8;padding:40px;text-align:center;'><h2>Settings Saved!</h2><p>Rebooting station now...</p></body></html>");
   delay(1000);
@@ -304,6 +382,7 @@ void appendRecordToSpool(unsigned long epochSec, unsigned long relMillis, int rs
   doc["cf_ms"]   = targets.cloudflare;
   doc["err"]     = errMask;
   doc["vbat"]    = (int)(vbat * 1000.0f);
+  doc["sub"]     = false;
 
   serializeJson(doc, f);
   f.println();
@@ -503,7 +582,99 @@ void runMeasurement() {
   digitalWrite(PIN_LED, LOW);
 }
 
-// ---------- Daily Upload & Fallback Network ----------
+// ---------- Flash Spool Confirmation & Management ----------
+
+void rotateSubmittedLog() {
+  File f = LittleFS.open("/spool/submitted.jsonl", "r");
+  if (!f) return;
+
+  File temp = LittleFS.open("/spool/sub_tmp.jsonl", "w");
+  if (!temp) {
+    f.close();
+    return;
+  }
+
+  int totalLines = 0;
+  while (f.available()) {
+    f.readStringUntil('\n');
+    totalLines++;
+  }
+  f.seek(0);
+
+  // Retain the newest 100 lines
+  int linesToSkip = (totalLines > 100) ? (totalLines - 100) : 0;
+  int current = 0;
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    if (current++ >= linesToSkip && line.length() >= 5) {
+      temp.println(line);
+    }
+  }
+  f.close();
+  temp.close();
+
+  LittleFS.remove("/spool/submitted.jsonl");
+  LittleFS.rename("/spool/sub_tmp.jsonl", "/spool/submitted.jsonl");
+  Serial.println("[Spool] Rotated /spool/submitted.jsonl (retained 100 newest records)");
+}
+
+void markSpoolAsSubmitted() {
+  if (!LittleFS.exists("/spool/pending.jsonl")) return;
+
+  File readFile = LittleFS.open("/spool/pending.jsonl", "r");
+  if (!readFile) return;
+
+  File subFile = LittleFS.open("/spool/submitted.jsonl", "a");
+  if (!subFile) {
+    readFile.close();
+    return;
+  }
+
+  int count = 0;
+  while (readFile.available()) {
+    String line = readFile.readStringUntil('\n');
+    if (line.length() < 10) continue;
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, line);
+    if (!err) {
+      doc["sub"] = true;
+      serializeJson(doc, subFile);
+      subFile.println();
+      count++;
+    }
+  }
+  readFile.close();
+  subFile.close();
+
+  // Clear pending spool since all records are confirmed submitted
+  LittleFS.remove("/spool/pending.jsonl");
+
+  // Keep submitted.jsonl bounded (max ~64KB)
+  File checkFile = LittleFS.open("/spool/submitted.jsonl", "r");
+  if (checkFile) {
+    size_t sz = checkFile.size();
+    checkFile.close();
+    if (sz > 65536) {
+      rotateSubmittedLog();
+    }
+  }
+
+  // Update persistent submission state
+  time_t now = 0;
+  if (ntpSynchronized) {
+    now = ntpBaseEpoch + (millis() - ntpBaseMillis) / 1000;
+    struct tm tmNow;
+    gmtime_r(&now, &tmNow);
+    spoolState.last_upload_day = tmNow.tm_yday;
+  }
+  spoolState.last_upload_epoch = now;
+  spoolState.initial_submitted = true;
+  saveSpoolState();
+
+  Serial.printf("[Spool] Submission confirmed and marked in flash (%d records committed)\n", count);
+}
+
+// ---------- Batch Ingestion & Backlog Handling ----------
 
 bool postSpoolToWorker(const char* ssid, const char* pass) {
   WiFi.mode(WIFI_STA);
@@ -512,16 +683,24 @@ bool postSpoolToWorker(const char* ssid, const char* pass) {
   while (WiFi.status() != WL_CONNECTED && (millis() - t0) < 15000) {
     delay(100);
   }
-  if (WiFi.status() != WL_CONNECTED) return false;
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.printf("[Upload] Wi-Fi connection to '%s' failed\n", ssid);
+    return false;
+  }
 
   if (!ntpSynchronized) syncNTP();
 
   File f = LittleFS.open("/spool/pending.jsonl", "r");
-  if (!f) { WiFi.disconnect(true); return true; }
+  if (!f) {
+    WiFi.disconnect(true);
+    Serial.println("[Upload] No pending records in spool");
+    return true;
+  }
 
   // Build batch payload
   JsonDocument doc;
   doc["station_id"]   = config.station_id;
+  doc["firmware"]     = "0.4.0";
   doc["battery_mv"]   = (int)(readBatteryVoltage() * 1000.0f);
   doc["battery_pct"]  = batteryPercent(readBatteryVoltage());
 
@@ -531,8 +710,17 @@ bool postSpoolToWorker(const char* ssid, const char* pass) {
     if (line.length() < 10) continue;
     JsonDocument lineDoc;
     if (!deserializeJson(lineDoc, line)) {
+      unsigned long t = lineDoc["t"];
+      // If record is still un-synced (t == 0), retroactively calculate if NTP is available
+      if (t == 0 && ntpSynchronized) {
+        unsigned long rel_ms = lineDoc["rel_ms"] | 0;
+        long diffSec = (long)((millis() - rel_ms) / 1000);
+        t = (unsigned long)(ntpBaseEpoch - diffSec);
+      }
+      if (t == 0) continue; // Skip un-synced records to avoid worker HTTP 400 rejection
+
       JsonObject obj = recs.add<JsonObject>();
-      obj["timestamp"] = lineDoc["t"];
+      obj["timestamp"] = t;
       obj["ssid"]      = lineDoc["s"];
       obj["rssi"]      = lineDoc["r"];
       obj["channel"]   = lineDoc["ch"];
@@ -553,6 +741,7 @@ bool postSpoolToWorker(const char* ssid, const char* pass) {
 
   if (recs.size() == 0) {
     WiFi.disconnect(true);
+    Serial.println("[Upload] No valid timestamped records to submit");
     return true;
   }
 
@@ -560,42 +749,167 @@ bool postSpoolToWorker(const char* ssid, const char* pass) {
   serializeJson(doc, payload);
 
   HTTPClient http;
+  http.setTimeout(15000);
   http.begin(config.worker_url);
   http.addHeader("Content-Type", "application/json");
   String auth = String("Bearer ") + config.auth_token;
   http.addHeader("Authorization", auth);
 
+  Serial.printf("[Upload] Posting %d records to %s ...\n", recs.size(), config.worker_url);
   int code = http.POST(payload);
+  String responseBody = "";
+  if (code > 0) {
+    responseBody = http.getString();
+  }
   http.end();
   WiFi.disconnect(true);
 
+  bool confirmed = false;
   if (code == 200 || code == 201) {
-    LittleFS.remove("/spool/pending.jsonl");
-    Serial.printf("[Upload] Ingestion success (%d records committed)\n", recs.size());
+    JsonDocument respDoc;
+    DeserializationError err = deserializeJson(respDoc, responseBody);
+    if (!err && respDoc["success"].as<bool>() == true) {
+      confirmed = true;
+      int processed = respDoc["records_processed"] | recs.size();
+      Serial.printf("[Upload] Ingestion confirmed by worker! (%d records processed)\n", processed);
+    } else {
+      Serial.printf("[Upload] HTTP %d received but response verification failed: %s\n", code, responseBody.c_str());
+    }
+  } else {
+    Serial.printf("[Upload] Worker returned HTTP %d: %s\n", code, responseBody.c_str());
+  }
+
+  // Only then mark the data in the flash of the esp32 as submitted
+  if (confirmed) {
+    markSpoolAsSubmitted();
     return true;
   }
 
-  Serial.printf("[Upload] Worker returned HTTP %d\n", code);
+  Serial.println("[Upload] Ingestion was not confirmed. Records remain marked pending in flash.");
   return false;
+}
+
+bool hasUnsubmittedOldData() {
+  if (!LittleFS.exists("/spool/pending.jsonl")) return false;
+
+  File f = LittleFS.open("/spool/pending.jsonl", "r");
+  if (!f) return false;
+  if (f.size() < 10) {
+    f.close();
+    return false;
+  }
+
+  if (!ntpSynchronized) {
+    f.close();
+    return false;
+  }
+
+  time_t now = ntpBaseEpoch + (millis() - ntpBaseMillis) / 1000;
+  struct tm tmNow;
+  gmtime_r(&now, &tmNow);
+
+  bool foundOld = false;
+  while (f.available() && !foundOld) {
+    String line = f.readStringUntil('\n');
+    if (line.length() < 10) continue;
+    JsonDocument doc;
+    if (!deserializeJson(doc, line)) {
+      unsigned long t = doc["t"];
+      if (t > 1000000000) {
+        time_t recEpoch = (time_t)t;
+        struct tm tmRec;
+        gmtime_r(&recEpoch, &tmRec);
+
+        // Record is from an earlier year or earlier calendar day in the same year
+        if (tmRec.tm_year < tmNow.tm_year ||
+           (tmRec.tm_year == tmNow.tm_year && tmRec.tm_yday < tmNow.tm_yday)) {
+          foundOld = true;
+          Serial.printf("[Spool] Found unsubmitted record from %04d-%02d-%02d (today is %04d-%02d-%02d)\n",
+                        tmRec.tm_year + 1900, tmRec.tm_mon + 1, tmRec.tm_mday,
+                        tmNow.tm_year + 1900, tmNow.tm_mon + 1, tmNow.tm_mday);
+          break;
+        }
+
+        // Or record is older than 20 hours
+        if (now > recEpoch && (now - recEpoch) > 72000) {
+          foundOld = true;
+          Serial.printf("[Spool] Found unsubmitted record older than 20 hours (%ld seconds old)\n", (long)(now - recEpoch));
+          break;
+        }
+      }
+    }
+  }
+  f.close();
+
+  // Also check if daily upload for yesterday was never executed while pending records exist
+  if (!foundOld && spoolState.last_upload_day != -1 && spoolState.last_upload_day < tmNow.tm_yday) {
+    foundOld = true;
+    Serial.printf("[Spool] Pending records exist and last upload day was %d (current day %d)\n",
+                  spoolState.last_upload_day, tmNow.tm_yday);
+  }
+
+  return foundOld;
+}
+
+void checkUnsubmittedData() {
+  if (!LittleFS.exists("/spool/pending.jsonl")) return;
+
+  if (!ntpSynchronized) {
+    syncNTP();
+  }
+  if (!ntpSynchronized) return;
+
+  if (hasUnsubmittedOldData()) {
+    Serial.println("[Spool] Old collected data has not been submitted! Triggering immediate upload...");
+    bool ok = postSpoolToWorker(config.monitored_ssid, config.monitored_pass);
+    if (!ok && strlen(config.fallback_ssid) > 0) {
+      Serial.println("[Spool] Primary network failed, attempting Fallback Network for old data...");
+      ok = postSpoolToWorker(config.fallback_ssid, config.fallback_pass);
+    }
+    if (ok) {
+      Serial.println("[Spool] Old data successfully submitted and marked in flash.");
+    } else {
+      Serial.println("[Spool] Failed to submit old data; will retry next probe cycle.");
+    }
+  }
 }
 
 void checkDailyUpload() {
   if (!ntpSynchronized) return;
 
   time_t now = ntpBaseEpoch + (millis() - ntpBaseMillis) / 1000;
-  struct tm* ptm = gmtime(&now);
-  int hourUTC = ptm->tm_hour;
-  int currentDay = ptm->tm_yday;
+  struct tm tmNow;
+  gmtime_r(&now, &tmNow);
+  int hourUTC = tmNow.tm_hour;
+  int currentDay = tmNow.tm_yday;
 
   // Upload window: 19:00 to 21:00 UTC (02:00 to 04:00 Vietnam time)
-  if (hourUTC >= 19 && hourUTC <= 21 && lastUploadDay != currentDay) {
+  if (hourUTC >= 19 && hourUTC <= 21 && spoolState.last_upload_day != currentDay) {
     Serial.println("[Upload] Triggering daily batch upload...");
     bool ok = postSpoolToWorker(config.monitored_ssid, config.monitored_pass);
     if (!ok && strlen(config.fallback_ssid) > 0) {
       Serial.println("[Upload] Primary failed, attempting Fallback Network...");
       ok = postSpoolToWorker(config.fallback_ssid, config.fallback_pass);
     }
-    if (ok) lastUploadDay = currentDay;
+    if (ok) {
+      Serial.println("[Upload] Daily batch upload confirmed and recorded.");
+    }
+  }
+}
+
+void checkInitialUpload() {
+  if (spoolState.initial_submitted) return;
+
+  Serial.println("[Startup] New station setup detected. Submitting initial telemetry to GitHub...");
+  bool ok = postSpoolToWorker(config.monitored_ssid, config.monitored_pass);
+  if (!ok && strlen(config.fallback_ssid) > 0) {
+    Serial.println("[Startup] Primary failed, attempting Fallback Network for initial submission...");
+    ok = postSpoolToWorker(config.fallback_ssid, config.fallback_pass);
+  }
+  if (ok) {
+    Serial.println("[Startup] Initial submission confirmed! Station registered on GitHub.");
+  } else {
+    Serial.println("[Startup] Initial submission failed. Will retry on next probe cycle.");
   }
 }
 
@@ -609,6 +923,7 @@ void setup() {
   analogReadResolution(12);
 
   loadConfig();
+  loadSpoolState();
 
   // Cold boot detection:
   // AP is launched only if power-on reset or BOOT button held down or config missing
@@ -653,7 +968,13 @@ void loop() {
   // Routine Measurement Cycle
   runMeasurement();
 
-  // Check if inside daily upload window
+  // If a new station is set up, submit initial data to GitHub as the initial step
+  checkInitialUpload();
+
+  // Check if old collected data has not been submitted (catch-up)
+  checkUnsubmittedData();
+
+  // Check if inside daily upload window (19:00 - 21:00 UTC)
   checkDailyUpload();
 
   // Power down Wi-Fi before entering light sleep
