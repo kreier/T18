@@ -7,8 +7,8 @@
     "fallback_network": "S24",
     "probe_interval_min": 10,
     "first_seen": "2026-11-11T18:47:39Z",
-    "last_seen": "2026-11-12T12:59:50Z",
-    "battery_mv": 4149,
+    "last_seen": "2026-11-12T14:38:10.706Z",
+    "battery_mv": 4148,
     "battery_pct": 96,
     "visible_networks": 41,
     "status": "online"
