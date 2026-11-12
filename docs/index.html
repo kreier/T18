@@ -78,23 +78,20 @@
       </div>
       <div class="meta-card">
         <span class="meta-label">Monitored Wi-Fi</span>
-        <span class="meta-value mono" id="meta-ssid">-</span>
-      </div>
-      <div class="meta-card">
-        <span class="meta-label">Emergency Fallback</span>
-        <span class="meta-value mono" id="meta-fallback">-</span>
+        <div class="meta-value-container" id="meta-ssid-container">
+          <span class="meta-value mono" id="meta-ssid">-</span>
+        </div>
       </div>
       <div class="meta-card">
         <span class="meta-label">Battery Level</span>
         <span class="meta-value" id="meta-battery">-</span>
       </div>
-      <div class="meta-card">
-        <span class="meta-label">Visible Networks</span>
+      <div class="meta-card clickable-card" id="card-visible-networks" role="button" tabindex="0" title="Click to view visible networks spectrum & signal strength survey">
+        <div class="meta-card-header">
+          <span class="meta-label">Visible Networks</span>
+          <span class="card-action-badge">Survey ↗</span>
+        </div>
         <span class="meta-value" id="meta-networks">-</span>
-      </div>
-      <div class="meta-card">
-        <span class="meta-label">First Transmission</span>
-        <span class="meta-value" id="meta-first-seen">-</span>
       </div>
       <div class="meta-card">
         <span class="meta-label">Last Transmission</span>
@@ -144,6 +141,58 @@
     <footer class="footer">
       <p>Powered by <a href="https://github.com/kreier/T18" target="_blank" rel="noopener">T18 ESP32 Firmware</a>, Cloudflare Workers, and GitHub Pages &bull; Version <span id="footer-version" class="mono"></span></p>
     </footer>
+  </div>
+
+  <!-- Visible Networks Modal -->
+  <div class="modal-backdrop" id="networks-modal" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-header">
+        <div>
+          <h2 id="modal-title">Visible Wi-Fi Spectrum Survey</h2>
+          <p class="modal-subtitle" id="modal-subtitle">Station C-103 &bull; Daily Relative Signal Strength & Visibility</p>
+        </div>
+        <button class="modal-close-btn" id="modal-close-btn" type="button" aria-label="Close dialog">&times;</button>
+      </div>
+
+      <div class="modal-toolbar">
+        <div class="toolbar-group">
+          <label for="survey-date-select">Survey Date:</label>
+          <select id="survey-date-select">
+            <option value="">Loading dates...</option>
+          </select>
+        </div>
+        <div class="toolbar-group flex-1">
+          <label for="survey-filter-input">Filter SSID:</label>
+          <input type="text" id="survey-filter-input" placeholder="Type to filter networks..." />
+        </div>
+        <div class="survey-stats-pill" id="survey-stats-pill">
+          0 networks
+        </div>
+      </div>
+
+      <div class="modal-table-wrap">
+        <table class="survey-table">
+          <thead>
+            <tr>
+              <th style="width: 48px; text-align: center;">#</th>
+              <th>Network Name (SSID)</th>
+              <th style="width: 220px;">Average Signal (dBm)</th>
+              <th style="width: 200px;">Daily Visibility</th>
+              <th style="width: 120px;">Presence</th>
+              <th style="width: 60px; text-align: center;">Ch</th>
+            </tr>
+          </thead>
+          <tbody id="survey-table-body">
+            <!-- Populated dynamically -->
+          </tbody>
+        </table>
+      </div>
+
+      <div class="modal-footer">
+        <span class="modal-footer-note">Collected every 10 minutes. Signal averages & visibility percentages calculated across daily scans. Sorted from strongest to weakest signal.</span>
+        <button class="btn-secondary" id="modal-close-footer-btn" type="button">Close</button>
+      </div>
+    </div>
   </div>
 
   <!-- Tooltip element -->

@@ -18,10 +18,10 @@ const timezoneSelect = document.getElementById('timezone-select');
 const metaName = document.getElementById('meta-name');
 const metaLocation = document.getElementById('meta-location');
 const metaSsid = document.getElementById('meta-ssid');
-const metaFallback = document.getElementById('meta-fallback');
+const metaSsidContainer = document.getElementById('meta-ssid-container');
 const metaBattery = document.getElementById('meta-battery');
 const metaNetworks = document.getElementById('meta-networks');
-const metaFirstSeen = document.getElementById('meta-first-seen');
+const cardVisibleNetworks = document.getElementById('card-visible-networks');
 const metaLastSeen = document.getElementById('meta-last-seen');
 const heatmapContainer = document.getElementById('heatmap-container');
 const detailTitle = document.getElementById('detail-title');
@@ -29,6 +29,20 @@ const detailStats = document.getElementById('detail-stats');
 const tooltip = document.getElementById('tooltip');
 const tzIndicator = document.getElementById('tz-indicator');
 const footerAxisNote = document.getElementById('footer-axis-note');
+
+// Modal Elements
+const networksModal = document.getElementById('networks-modal');
+const modalTitle = document.getElementById('modal-title');
+const modalSubtitle = document.getElementById('modal-subtitle');
+const modalCloseBtn = document.getElementById('modal-close-btn');
+const modalCloseFooterBtn = document.getElementById('modal-close-footer-btn');
+const surveyDateSelect = document.getElementById('survey-date-select');
+const surveyFilterInput = document.getElementById('survey-filter-input');
+const surveyStatsPill = document.getElementById('survey-stats-pill');
+const surveyTableBody = document.getElementById('survey-table-body');
+
+let stationNetworksData = null;
+let currentSurveyDay = null;
 
 /**
  * Fetch helper with fallback to relative or parent path
@@ -109,11 +123,26 @@ async function selectStation(stationId) {
 
   metaName.textContent = currentStation.name || currentStation.id;
   metaLocation.textContent = currentStation.location || 'Unknown';
-  metaSsid.textContent = currentStation.monitored_network || 'Default';
-  if (metaFallback) metaFallback.textContent = currentStation.fallback_network || 'S24';
+
+  // Render multiple monitored Wi-Fi network pills
+  const networks = currentStation.monitored_networks || (currentStation.monitored_network ? [currentStation.monitored_network] : ['Default']);
+  if (metaSsidContainer) {
+    metaSsidContainer.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.className = 'wifi-pills-wrap';
+    networks.forEach(net => {
+      const pill = document.createElement('span');
+      pill.className = 'wifi-pill';
+      pill.textContent = net;
+      wrap.appendChild(pill);
+    });
+    metaSsidContainer.appendChild(wrap);
+  } else if (metaSsid) {
+    metaSsid.textContent = networks.join(', ');
+  }
+
   metaBattery.textContent = `${(currentStation.battery_mv / 1000).toFixed(2)}V (${currentStation.battery_pct}%)`;
-  if (metaNetworks) metaNetworks.textContent = currentStation.visible_networks ? `${currentStation.visible_networks} SSIDs` : '12 SSIDs';
-  if (metaFirstSeen) metaFirstSeen.textContent = currentStation.first_seen ? formatDateTime(new Date(currentStation.first_seen)) : 'N/A';
+  if (metaNetworks) metaNetworks.textContent = currentStation.visible_networks ? `${currentStation.visible_networks} SSIDs (Click to view)` : '12 SSIDs';
   metaLastSeen.textContent = currentStation.last_seen ? formatDateTime(new Date(currentStation.last_seen)) : 'N/A';
 
   await loadStationData(stationId);
@@ -377,16 +406,224 @@ function initTheme() {
   }
 }
 
+/**
+ * Visible Networks Spectrum Modal
+ */
+async function openNetworksModal() {
+  if (!currentStation) return;
+  networksModal.classList.add('open');
+  networksModal.setAttribute('aria-hidden', 'false');
+  document.body.style.overflow = 'hidden';
+
+  modalTitle.textContent = `Visible Wi-Fi Spectrum Survey`;
+  modalSubtitle.textContent = `Station ${currentStation.name || currentStation.id} (${currentStation.id}) • Daily Relative Signal Strength & Visibility`;
+
+  surveyTableBody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-muted)">Loading daily network survey...</td></tr>`;
+  surveyStatsPill.textContent = 'Scanning...';
+
+  try {
+    stationNetworksData = await fetchJsonWithFallback(`../data/${currentStation.id}/networks.json`);
+    populateSurveyDates();
+  } catch (err) {
+    console.warn('Could not load networks.json for station', err);
+    surveyTableBody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-muted)">No network survey data recorded for this station yet.</td></tr>`;
+    surveyStatsPill.textContent = '0 networks';
+  }
+}
+
+function closeNetworksModal() {
+  networksModal.classList.remove('open');
+  networksModal.setAttribute('aria-hidden', 'true');
+  document.body.style.overflow = '';
+}
+
+function populateSurveyDates() {
+  surveyDateSelect.innerHTML = '';
+  if (!stationNetworksData || !stationNetworksData.daily) {
+    surveyTableBody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-muted)">No network survey data recorded.</td></tr>`;
+    return;
+  }
+
+  const days = Object.keys(stationNetworksData.daily).sort().reverse();
+  if (days.length === 0) {
+    surveyTableBody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-muted)">No network survey data recorded.</td></tr>`;
+    return;
+  }
+
+  days.forEach(day => {
+    const opt = document.createElement('option');
+    opt.value = day;
+    const count = stationNetworksData.daily[day].networks ? stationNetworksData.daily[day].networks.length : 0;
+    opt.textContent = `${day} (${count} SSIDs detected)`;
+    surveyDateSelect.appendChild(opt);
+  });
+
+  currentSurveyDay = days[0];
+  surveyDateSelect.value = currentSurveyDay;
+  renderSurveyTable();
+}
+
+function renderSurveyTable() {
+  if (!stationNetworksData || !stationNetworksData.daily || !currentSurveyDay) return;
+  const dayData = stationNetworksData.daily[currentSurveyDay];
+  if (!dayData || !dayData.networks) return;
+
+  const query = (surveyFilterInput.value || '').trim().toLowerCase();
+  const filtered = dayData.networks.filter(net => !query || net.ssid.toLowerCase().includes(query));
+
+  surveyStatsPill.textContent = `${filtered.length} of ${dayData.networks.length} networks • ${dayData.total_scans || 144} scans`;
+
+  surveyTableBody.innerHTML = '';
+  if (filtered.length === 0) {
+    surveyTableBody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-muted)">No matching Wi-Fi networks found.</td></tr>`;
+    return;
+  }
+
+  filtered.forEach((net, index) => {
+    const tr = document.createElement('tr');
+
+    // Rank
+    const tdRank = document.createElement('td');
+    tdRank.style.textAlign = 'center';
+    tdRank.style.fontFamily = 'var(--font-mono)';
+    tdRank.style.color = 'var(--text-muted)';
+    tdRank.textContent = index + 1;
+    tr.appendChild(tdRank);
+
+    // SSID Name & Monitored Badge
+    const tdSsid = document.createElement('td');
+    const ssidWrap = document.createElement('div');
+    ssidWrap.className = 'ssid-cell';
+    const ssidName = document.createElement('span');
+    ssidName.textContent = net.ssid;
+    ssidWrap.appendChild(ssidName);
+    if (net.is_monitored) {
+      const monBadge = document.createElement('span');
+      monBadge.className = 'badge-monitored';
+      monBadge.textContent = 'Monitored';
+      ssidWrap.appendChild(monBadge);
+    }
+    tdSsid.appendChild(ssidWrap);
+    tr.appendChild(tdSsid);
+
+    // Average Signal (dBm) with Signal Meter Bar
+    const tdSignal = document.createElement('td');
+    const sigContainer = document.createElement('div');
+    sigContainer.className = 'signal-container';
+    
+    const sigVal = document.createElement('span');
+    sigVal.className = 'signal-val';
+    sigVal.textContent = `${net.avg_rssi} dBm`;
+    sigContainer.appendChild(sigVal);
+
+    const sigMeter = document.createElement('div');
+    sigMeter.className = 'signal-meter';
+    const sigFill = document.createElement('div');
+    sigFill.className = 'signal-meter-fill';
+    
+    // Map -95 dBm (0%) to -30 dBm (100%)
+    const pct = Math.max(5, Math.min(100, Math.round(((net.avg_rssi + 95) / 65) * 100)));
+    sigFill.style.width = `${pct}%`;
+    if (net.avg_rssi >= -50) sigFill.classList.add('excellent');
+    else if (net.avg_rssi >= -67) sigFill.classList.add('good');
+    else if (net.avg_rssi >= -79) sigFill.classList.add('fair');
+    else sigFill.classList.add('weak');
+    
+    sigMeter.appendChild(sigFill);
+    sigContainer.appendChild(sigMeter);
+    tdSignal.appendChild(sigContainer);
+    tr.appendChild(tdSignal);
+
+    // Daily Visibility with Progress Meter
+    const tdVis = document.createElement('td');
+    const visContainer = document.createElement('div');
+    visContainer.className = 'visibility-container';
+    
+    const visVal = document.createElement('span');
+    visVal.className = 'visibility-val';
+    visVal.textContent = `${net.visibility_pct}%`;
+    visContainer.appendChild(visVal);
+
+    const visMeter = document.createElement('div');
+    visMeter.className = 'visibility-meter';
+    const visFill = document.createElement('div');
+    visFill.className = 'visibility-meter-fill';
+    visFill.style.width = `${net.visibility_pct}%`;
+    visMeter.appendChild(visFill);
+    visContainer.appendChild(visMeter);
+    tdVis.appendChild(visContainer);
+    tr.appendChild(tdVis);
+
+    // Presence Status Badge
+    const tdStatus = document.createElement('td');
+    const statusBadge = document.createElement('span');
+    statusBadge.className = 'badge-status';
+    if (net.visibility_pct >= 90) {
+      statusBadge.classList.add('badge-continuous');
+      statusBadge.textContent = 'Continuous';
+    } else if (net.visibility_pct >= 30) {
+      statusBadge.classList.add('badge-intermittent');
+      statusBadge.textContent = 'Intermittent';
+    } else {
+      statusBadge.classList.add('badge-transient');
+      statusBadge.textContent = 'Transient';
+    }
+    tdStatus.appendChild(statusBadge);
+    tr.appendChild(tdStatus);
+
+    // Channel
+    const tdCh = document.createElement('td');
+    tdCh.style.textAlign = 'center';
+    tdCh.style.fontFamily = 'var(--font-mono)';
+    tdCh.style.color = 'var(--text-muted)';
+    tdCh.textContent = net.channel || '-';
+    tr.appendChild(tdCh);
+
+    surveyTableBody.appendChild(tr);
+  });
+}
+
 // Event Listeners
 stationSelect.addEventListener('change', (e) => selectStation(e.target.value));
 timezoneSelect.addEventListener('change', (e) => {
   currentTzOffset = parseInt(e.target.value, 10);
   if (currentStation) {
-    if (metaFirstSeen) metaFirstSeen.textContent = currentStation.first_seen ? formatDateTime(new Date(currentStation.first_seen)) : 'N/A';
     if (metaLastSeen) metaLastSeen.textContent = currentStation.last_seen ? formatDateTime(new Date(currentStation.last_seen)) : 'N/A';
   }
   renderHeatmap();
 });
+
+// Modal Event Listeners
+if (cardVisibleNetworks) {
+  cardVisibleNetworks.addEventListener('click', openNetworksModal);
+  cardVisibleNetworks.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      openNetworksModal();
+    }
+  });
+}
+if (modalCloseBtn) modalCloseBtn.addEventListener('click', closeNetworksModal);
+if (modalCloseFooterBtn) modalCloseFooterBtn.addEventListener('click', closeNetworksModal);
+if (networksModal) {
+  networksModal.addEventListener('click', (e) => {
+    if (e.target === networksModal) closeNetworksModal();
+  });
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && networksModal && networksModal.classList.contains('open')) {
+    closeNetworksModal();
+  }
+});
+if (surveyDateSelect) {
+  surveyDateSelect.addEventListener('change', (e) => {
+    currentSurveyDay = e.target.value;
+    renderSurveyTable();
+  });
+}
+if (surveyFilterInput) {
+  surveyFilterInput.addEventListener('input', renderSurveyTable);
+}
 
 // Init
 document.addEventListener('DOMContentLoaded', () => {

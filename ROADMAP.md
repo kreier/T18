@@ -50,14 +50,18 @@ This roadmap tracks the development of the T18 Network Reliability Monitor acros
 
 ---
 
-## Phase 4: Web Dashboard & 53-Day Heatmap (v0.4.1 - v0.5.0)
+## Phase 4: Web Dashboard, Multi-Network & Spectrum Survey (v0.5.0)
 - [x] Implement GitHub Pages static application (`docs/index.html`).
 - [x] Station selector dropdown reading `data/stations.json`.
 - [x] 53-Day × 24-Hour interactive CSS Grid heatmap with local ICT (UTC+7) and UTC toggle.
-- [x] Dynamic version badge loaded from repository `version.json` (v0.4.2).
-- [x] Dark Mode / Light Mode theme toggle with system preference detection and localStorage persistence (v0.4.2).
-- [x] Fixed heatmap cell CSS specificity so status colors (green, orange, purple, red) display properly instead of gray (v0.4.2).
-- [x] Bug fix: UTC ISO hour key normalization in heatmap lookup and Cloudflare ingestion (v0.4.1).
+- [x] Dynamic version badge loaded from repository `version.json` (v0.5.0).
+- [x] Dark Mode / Light Mode theme toggle with system preference detection and localStorage persistence.
+- [x] Fixed heatmap cell CSS specificity so status colors display properly instead of gray.
+- [x] Multi-network Wi-Fi monitoring in ESP32 setup portal & config storage (v0.5.0).
+- [x] Display multiple monitored Wi-Fi network pills in dashboard (v0.5.0).
+- [x] Daily 10-minute spectrum scan & database tracking for available networks with relative signal strength & daily visibility % (v0.5.0).
+- [x] Interactive Visible Networks Spectrum Modal dialog behind "VISIBLE NETWORKS" field (v0.5.0).
+- [x] Removed Emergency Fallback and First Transmission fields from dashboard for cleaner UI (v0.5.0).
 - [x] Tooltips with drill-down metrics (samples, association time, DHCP time, latencies, battery).
 - [ ] Battery drain trend curve over 53 days.
 - [ ] Mobile responsiveness polish.

@@ -3,8 +3,12 @@
     "id": "C-103",
     "name": "Room C-103",
     "location": "Science Building C, Room 103",
+    "monitored_networks": [
+      "School-Guest",
+      "School-Staff",
+      "Lab-IoT"
+    ],
     "monitored_network": "School-Guest",
-    "fallback_network": "S24",
     "probe_interval_min": 10,
     "first_seen": "2026-11-11T18:47:39Z",
     "last_seen": "2026-11-12T15:06:53.614Z",
@@ -17,8 +21,11 @@
     "id": "C-703",
     "name": "Room C-703",
     "location": "Science Building C, Room 703",
+    "monitored_networks": [
+      "School-Guest",
+      "Admin-Net"
+    ],
     "monitored_network": "School-Guest",
-    "fallback_network": "S24",
     "probe_interval_min": 10,
     "first_seen": "2026-10-01T08:00:00Z",
     "last_seen": "2026-11-11T20:00:00Z",
@@ -31,13 +38,17 @@
     "id": "LIB-2F",
     "name": "Library 2nd Floor",
     "location": "Library Building, East Study Area",
+    "monitored_networks": [
+      "Campus-Open",
+      "Library-Private"
+    ],
     "monitored_network": "Campus-Open",
-    "fallback_network": "S24",
     "probe_interval_min": 10,
     "first_seen": "2026-10-15T10:00:00Z",
     "last_seen": "2026-11-11T19:50:00Z",
     "battery_mv": 4050,
     "battery_pct": 88,
+    "visible_networks": 22,
     "status": "online"
   }
 ]

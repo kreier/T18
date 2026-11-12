@@ -50,8 +50,17 @@ struct TargetLatency {
 };
 
 // Configuration Model
+struct MonitoredNetwork {
+  char ssid[32] = "";
+  char pass[64] = "";
+};
+
+static const int MAX_MONITORED_NETWORKS = 4;
+
 struct StationConfig {
   char station_id[32]        = "C-103";
+  MonitoredNetwork monitored[MAX_MONITORED_NETWORKS];
+  int  monitored_count       = 1;
   char monitored_ssid[32]    = "School-Guest";
   char monitored_pass[64]    = "";
   char fallback_ssid[32]     = "S24";
@@ -143,6 +152,9 @@ bool initFileSystem() {
 void loadConfig() {
   if (!LittleFS.exists("/config.json")) {
     Serial.println("[FS] /config.json not found, using defaults");
+    strlcpy(config.monitored[0].ssid, config.monitored_ssid, sizeof(config.monitored[0].ssid));
+    strlcpy(config.monitored[0].pass, config.monitored_pass, sizeof(config.monitored[0].pass));
+    config.monitored_count = 1;
     return;
   }
 
@@ -155,14 +167,35 @@ void loadConfig() {
 
   if (!err) {
     strlcpy(config.station_id,     doc["station_id"]     | config.station_id,     sizeof(config.station_id));
-    strlcpy(config.monitored_ssid, doc["monitored_ssid"] | config.monitored_ssid, sizeof(config.monitored_ssid));
-    strlcpy(config.monitored_pass, doc["monitored_pass"] | config.monitored_pass, sizeof(config.monitored_pass));
+    
+    // Load multiple monitored networks if array exists
+    if (doc.containsKey("monitored_networks") && doc["monitored_networks"].is<JsonArray>()) {
+      JsonArray arr = doc["monitored_networks"];
+      config.monitored_count = 0;
+      for (JsonObject obj : arr) {
+        if (config.monitored_count < MAX_MONITORED_NETWORKS) {
+          strlcpy(config.monitored[config.monitored_count].ssid, obj["ssid"] | "", sizeof(config.monitored[0].ssid));
+          strlcpy(config.monitored[config.monitored_count].pass, obj["pass"] | "", sizeof(config.monitored[0].pass));
+          config.monitored_count++;
+        }
+      }
+    } else {
+      strlcpy(config.monitored[0].ssid, doc["monitored_ssid"] | config.monitored_ssid, sizeof(config.monitored[0].ssid));
+      strlcpy(config.monitored[0].pass, doc["monitored_pass"] | config.monitored_pass, sizeof(config.monitored[0].pass));
+      config.monitored_count = 1;
+    }
+
+    if (config.monitored_count > 0 && strlen(config.monitored[0].ssid) > 0) {
+      strlcpy(config.monitored_ssid, config.monitored[0].ssid, sizeof(config.monitored_ssid));
+      strlcpy(config.monitored_pass, config.monitored[0].pass, sizeof(config.monitored_pass));
+    }
+
     strlcpy(config.fallback_ssid,  doc["fallback_ssid"]  | config.fallback_ssid,  sizeof(config.fallback_ssid));
     strlcpy(config.fallback_pass,  doc["fallback_pass"]  | config.fallback_pass,  sizeof(config.fallback_pass));
     config.interval_min = doc["interval_min"] | config.interval_min;
     strlcpy(config.worker_url,     doc["worker_url"]     | config.worker_url,     sizeof(config.worker_url));
     strlcpy(config.auth_token,     doc["auth_token"]     | config.auth_token,     sizeof(config.auth_token));
-    Serial.printf("[Config] Loaded station: %s, Monitored: %s\n", config.station_id, config.monitored_ssid);
+    Serial.printf("[Config] Loaded station: %s, Monitored networks: %d\n", config.station_id, config.monitored_count);
   }
 }
 
@@ -175,8 +208,18 @@ void saveConfig() {
 
   JsonDocument doc;
   doc["station_id"]     = config.station_id;
-  doc["monitored_ssid"] = config.monitored_ssid;
-  doc["monitored_pass"] = config.monitored_pass;
+
+  JsonArray netArr = doc["monitored_networks"].to<JsonArray>();
+  for (int i = 0; i < config.monitored_count; i++) {
+    if (strlen(config.monitored[i].ssid) > 0) {
+      JsonObject netObj = netArr.add<JsonObject>();
+      netObj["ssid"] = config.monitored[i].ssid;
+      netObj["pass"] = config.monitored[i].pass;
+    }
+  }
+
+  doc["monitored_ssid"] = config.monitored[0].ssid;
+  doc["monitored_pass"] = config.monitored[0].pass;
   doc["fallback_ssid"]  = config.fallback_ssid;
   doc["fallback_pass"]  = config.fallback_pass;
   doc["interval_min"]   = config.interval_min;
@@ -245,10 +288,12 @@ const char PORTAL_HTML[] PROGMEM = R"HTML(
   <title>T18 Setup</title>
   <style>
     body { font-family: sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 20px; }
-    .card { max-width: 500px; margin: 0 auto; background: #1e293b; padding: 24px; border-radius: 12px; }
+    .card { max-width: 520px; margin: 0 auto; background: #1e293b; padding: 24px; border-radius: 12px; }
     h1 { margin-top: 0; font-size: 20px; color: #38bdf8; }
-    label { display: block; margin-top: 14px; font-size: 13px; color: #94a3b8; }
-    input, select { width: 100%; box-sizing: border-box; padding: 10px; margin-top: 4px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #fff; font-size: 14px; }
+    .section-title { color: #38bdf8; font-size: 13px; font-weight: bold; margin-top: 18px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+    label { display: block; margin-top: 10px; font-size: 12px; color: #94a3b8; }
+    input, select { width: 100%; box-sizing: border-box; padding: 9px 12px; margin-top: 4px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #fff; font-size: 13px; }
+    .net-box { background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; margin-bottom: 8px; }
     .btn { background: #0284c7; color: #fff; border: none; padding: 12px 20px; border-radius: 6px; font-weight: bold; width: 100%; margin-top: 24px; cursor: pointer; }
     .btn:hover { background: #0369a1; }
     .info { font-size: 12px; color: #64748b; margin-top: 6px; }
@@ -257,24 +302,34 @@ const char PORTAL_HTML[] PROGMEM = R"HTML(
 </head>
 <body>
   <div class="card">
-    <h1>T18 Station Setup</h1>
+    <h1>T18 Station Setup (v0.5.0)</h1>
     <div class="vbat">Battery: <strong>%VBAT% V (%BAT_PCT%%)</strong></div>
     <div class="vbat" style="margin-top:6px;">Status: <strong>%SUB_STATUS%</strong></div>
     <form action="/save" method="POST">
       <label>Station ID / Location Name</label>
       <input type="text" name="station_id" value="%STATION_ID%" required>
 
-      <label>Monitored Wi-Fi SSID</label>
-      <input type="text" name="monitored_ssid" value="%MON_SSID%" required>
+      <div class="section-title">Monitored Wi-Fi Networks</div>
+      <div class="net-box">
+        <label style="margin-top:0;">Network 1 (Primary) SSID</label>
+        <input type="text" name="mon_ssid_1" value="%MON_SSID_1%" required>
+        <label>Network 1 Password</label>
+        <input type="password" name="mon_pass_1" value="%MON_PASS_1%">
+      </div>
 
-      <label>Monitored Wi-Fi Password</label>
-      <input type="password" name="monitored_pass" value="%MON_PASS%">
+      <div class="net-box">
+        <label style="margin-top:0;">Network 2 (Optional) SSID</label>
+        <input type="text" name="mon_ssid_2" value="%MON_SSID_2%">
+        <label>Network 2 Password</label>
+        <input type="password" name="mon_pass_2" value="%MON_PASS_2%">
+      </div>
 
-      <label>Fallback Wi-Fi SSID (Emergency Sync)</label>
-      <input type="text" name="fallback_ssid" value="%FB_SSID%" required>
-
-      <label>Fallback Wi-Fi Password</label>
-      <input type="password" name="fallback_pass" value="%FB_PASS%">
+      <div class="net-box">
+        <label style="margin-top:0;">Network 3 (Optional) SSID</label>
+        <input type="text" name="mon_ssid_3" value="%MON_SSID_3%">
+        <label>Network 3 Password</label>
+        <input type="password" name="mon_pass_3" value="%MON_PASS_3%">
+      </div>
 
       <label>Probe Interval (Minutes)</label>
       <input type="number" name="interval_min" min="1" max="60" value="%INTERVAL%">
@@ -287,7 +342,7 @@ const char PORTAL_HTML[] PROGMEM = R"HTML(
 
       <button type="submit" class="btn">Save & Reboot Station</button>
     </form>
-    <div class="info">Settings are committed to LittleFS. After reboot, initial telemetry is sent directly to GitHub.</div>
+    <div class="info">Settings are committed to LittleFS. After reboot, initial telemetry and daily visible spectrum scans are submitted directly to GitHub.</div>
   </div>
 </body>
 </html>
@@ -299,10 +354,14 @@ void handlePortalRoot() {
   html.replace("%VBAT%", String(v, 2));
   html.replace("%BAT_PCT%", String(batteryPercent(v)));
   html.replace("%STATION_ID%", config.station_id);
-  html.replace("%MON_SSID%", config.monitored_ssid);
-  html.replace("%MON_PASS%", config.monitored_pass);
-  html.replace("%FB_SSID%", config.fallback_ssid);
-  html.replace("%FB_PASS%", config.fallback_pass);
+
+  html.replace("%MON_SSID_1%", config.monitored[0].ssid);
+  html.replace("%MON_PASS_1%", config.monitored[0].pass);
+  html.replace("%MON_SSID_2%", config.monitored[1].ssid);
+  html.replace("%MON_PASS_2%", config.monitored[1].pass);
+  html.replace("%MON_SSID_3%", config.monitored[2].ssid);
+  html.replace("%MON_PASS_3%", config.monitored[2].pass);
+
   html.replace("%INTERVAL%", String(config.interval_min));
   html.replace("%WORKER_URL%", config.worker_url);
   html.replace("%AUTH_TOKEN%", config.auth_token);
@@ -322,14 +381,33 @@ void handlePortalRoot() {
 }
 
 void handlePortalSave() {
-  if (server.hasArg("station_id"))     strlcpy(config.station_id,     server.arg("station_id").c_str(),     sizeof(config.station_id));
-  if (server.hasArg("monitored_ssid")) strlcpy(config.monitored_ssid, server.arg("monitored_ssid").c_str(), sizeof(config.monitored_ssid));
-  if (server.hasArg("monitored_pass")) strlcpy(config.monitored_pass, server.arg("monitored_pass").c_str(), sizeof(config.monitored_pass));
-  if (server.hasArg("fallback_ssid"))  strlcpy(config.fallback_ssid,  server.arg("fallback_ssid").c_str(),  sizeof(config.fallback_ssid));
-  if (server.hasArg("fallback_pass"))  strlcpy(config.fallback_pass,  server.arg("fallback_pass").c_str(),  sizeof(config.fallback_pass));
-  if (server.hasArg("interval_min"))   config.interval_min = server.arg("interval_min").toInt();
-  if (server.hasArg("worker_url"))     strlcpy(config.worker_url,     server.arg("worker_url").c_str(),     sizeof(config.worker_url));
-  if (server.hasArg("auth_token"))     strlcpy(config.auth_token,     server.arg("auth_token").c_str(),     sizeof(config.auth_token));
+  if (server.hasArg("station_id")) strlcpy(config.station_id, server.arg("station_id").c_str(), sizeof(config.station_id));
+
+  config.monitored_count = 0;
+  if (server.hasArg("mon_ssid_1") && server.arg("mon_ssid_1").length() > 0) {
+    strlcpy(config.monitored[config.monitored_count].ssid, server.arg("mon_ssid_1").c_str(), sizeof(config.monitored[0].ssid));
+    strlcpy(config.monitored[config.monitored_count].pass, server.arg("mon_pass_1").c_str(), sizeof(config.monitored[0].pass));
+    config.monitored_count++;
+  }
+  if (server.hasArg("mon_ssid_2") && server.arg("mon_ssid_2").length() > 0) {
+    strlcpy(config.monitored[config.monitored_count].ssid, server.arg("mon_ssid_2").c_str(), sizeof(config.monitored[0].ssid));
+    strlcpy(config.monitored[config.monitored_count].pass, server.arg("mon_pass_2").c_str(), sizeof(config.monitored[0].pass));
+    config.monitored_count++;
+  }
+  if (server.hasArg("mon_ssid_3") && server.arg("mon_ssid_3").length() > 0) {
+    strlcpy(config.monitored[config.monitored_count].ssid, server.arg("mon_ssid_3").c_str(), sizeof(config.monitored[0].ssid));
+    strlcpy(config.monitored[config.monitored_count].pass, server.arg("mon_pass_3").c_str(), sizeof(config.monitored[0].pass));
+    config.monitored_count++;
+  }
+
+  if (config.monitored_count > 0) {
+    strlcpy(config.monitored_ssid, config.monitored[0].ssid, sizeof(config.monitored_ssid));
+    strlcpy(config.monitored_pass, config.monitored[0].pass, sizeof(config.monitored_pass));
+  }
+
+  if (server.hasArg("interval_min")) config.interval_min = server.arg("interval_min").toInt();
+  if (server.hasArg("worker_url"))   strlcpy(config.worker_url, server.arg("worker_url").c_str(), sizeof(config.worker_url));
+  if (server.hasArg("auth_token"))   strlcpy(config.auth_token, server.arg("auth_token").c_str(), sizeof(config.auth_token));
 
   saveConfig();
 
@@ -338,6 +416,9 @@ void handlePortalSave() {
   saveSpoolState();
 
   server.send(200, "text/html", "<html><body style='font-family:sans-serif;background:#0f172a;color:#38bdf8;padding:40px;text-align:center;'><h2>Settings Saved!</h2><p>Rebooting station now...</p></body></html>");
+  delay(1000);
+  ESP.restart();
+}
   delay(1000);
   ESP.restart();
 }
@@ -736,9 +817,16 @@ bool postSpoolToWorker(const char* ssid, const char* pass) {
   // Build batch payload
   JsonDocument doc;
   doc["station_id"]   = config.station_id;
-  doc["firmware"]     = "0.4.2";
+  doc["firmware"]     = "0.5.0";
   doc["battery_mv"]   = (int)(readBatteryVoltage() * 1000.0f);
   doc["battery_pct"]  = batteryPercent(readBatteryVoltage());
+
+  JsonArray netArr = doc["monitored_networks"].to<JsonArray>();
+  for (int i = 0; i < config.monitored_count; i++) {
+    if (strlen(config.monitored[i].ssid) > 0) {
+      netArr.add(config.monitored[i].ssid);
+    }
+  }
 
   JsonArray recs = doc["records"].to<JsonArray>();
   while (f.available()) {

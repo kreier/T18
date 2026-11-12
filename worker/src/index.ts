@@ -93,7 +93,7 @@ export default {
 
     // Health check
     if (request.method === 'GET' && url.pathname === '/') {
-      return new Response(JSON.stringify({ service: 'T18 Telemetry Gateway', status: 'healthy', version: '0.4.2' }), {
+      return new Response(JSON.stringify({ service: 'T18 Telemetry Gateway', status: 'healthy', version: '0.5.0' }), {
         headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       });
     }
@@ -399,14 +399,16 @@ async function updateStationsRegistry(env: Env, payload: IngestPayload): Promise
         list[idx].last_seen = now;
         if (payload.battery_mv) list[idx].battery_mv = payload.battery_mv;
         if (payload.battery_pct) list[idx].battery_pct = payload.battery_pct;
+        if ((payload as any).monitored_networks) list[idx].monitored_networks = (payload as any).monitored_networks;
         list[idx].status = 'online';
       } else {
+        const nets = (payload as any).monitored_networks || [payload.records[0]?.ssid || 'Unknown'];
         list.push({
           id: payload.station_id,
           name: payload.station_id,
           location: 'Auto-registered Station',
-          monitored_network: payload.records[0]?.ssid || 'Unknown',
-          fallback_network: 'S24',
+          monitored_networks: nets,
+          monitored_network: nets[0] || 'Unknown',
           first_seen: now,
           last_seen: now,
           battery_mv: payload.battery_mv || 0,
