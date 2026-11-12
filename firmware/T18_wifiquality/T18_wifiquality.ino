@@ -51,13 +51,13 @@ struct TargetLatency {
 
 // Configuration Model
 struct StationConfig {
-  char station_id[32]        = "C-703";
+  char station_id[32]        = "C-103";
   char monitored_ssid[32]    = "School-Guest";
   char monitored_pass[64]    = "";
   char fallback_ssid[32]     = "S24";
   char fallback_pass[64]     = "12345678";
   int  interval_min          = 10;
-  char worker_url[128]       = "https://t18-telemetry-worker.matthias-kreier.workers.dev/ingest";
+  char worker_url[128]       = "https://t18-telemetry-worker.kreier.workers.dev/ingest";
   char auth_token[64]        = "secret-station-token";
 };
 
@@ -85,6 +85,11 @@ WebServer server(80);
 DNSServer dnsServer;
 
 // Forward Declarations (for Arduino IDE preprocessor compatibility)
+bool initFileSystem();
+void loadConfig();
+void saveConfig();
+void loadSpoolState();
+void saveSpoolState();
 void appendRecordToSpool(unsigned long epochSec, unsigned long relMillis, int rssi, int ch,
                         unsigned long assoc_ms, unsigned long dhcp_ms, const char* ip,
                         const TargetLatency& targets, int errMask, float vbat);
@@ -92,8 +97,6 @@ void sendHourlyHeartbeat(float vbat, int rssi, unsigned long assoc_ms, unsigned 
                          const TargetLatency& targets, int errMask, time_t epochSec);
 void retroactivelyMapSpoolTimestamps();
 int  probeHttpTarget(const char* url);
-void loadSpoolState();
-void saveSpoolState();
 void markSpoolAsSubmitted();
 void rotateSubmittedLog();
 bool hasUnsubmittedOldData();
@@ -119,12 +122,25 @@ int batteryPercent(float v) {
   return constrain(p, 0, 100);
 }
 
-void loadConfig() {
+bool initFileSystem() {
   if (!LittleFS.begin(true)) {
     Serial.println("[FS] Failed to mount LittleFS");
-    return;
+    return false;
   }
+  Serial.println("[FS] LittleFS mounted successfully");
 
+  if (!LittleFS.exists("/spool")) {
+    if (LittleFS.mkdir("/spool")) {
+      Serial.println("[FS] Created /spool directory");
+    } else {
+      Serial.println("[FS] ERROR: Failed to create /spool directory");
+      return false;
+    }
+  }
+  return true;
+}
+
+void loadConfig() {
   if (!LittleFS.exists("/config.json")) {
     Serial.println("[FS] /config.json not found, using defaults");
     return;
@@ -169,7 +185,7 @@ void saveConfig() {
 
   serializeJson(doc, f);
   f.close();
-  Serial.println("[FS] Configuration saved");
+  Serial.println("[FS] Configuration saved to /config.json");
 }
 
 void loadSpoolState() {
@@ -177,7 +193,7 @@ void loadSpoolState() {
     spoolState.initial_submitted = false;
     spoolState.last_upload_epoch = 0;
     spoolState.last_upload_day   = -1;
-    Serial.println("[SpoolState] /spool/state.json not found, using defaults (initial_submitted=false)");
+    Serial.println("[SpoolState] /spool/state.json not found, defaults initialized (initial_submitted=false)");
     return;
   }
 
@@ -198,6 +214,10 @@ void loadSpoolState() {
 }
 
 void saveSpoolState() {
+  if (!LittleFS.exists("/spool")) {
+    LittleFS.mkdir("/spool");
+  }
+
   File f = LittleFS.open("/spool/state.json", "w");
   if (!f) {
     Serial.println("[SpoolState] Failed to open /spool/state.json for writing");
@@ -363,8 +383,15 @@ int probeHttpTarget(const char* url) {
 void appendRecordToSpool(unsigned long epochSec, unsigned long relMillis, int rssi, int ch,
                         unsigned long assoc_ms, unsigned long dhcp_ms, const char* ip,
                         const TargetLatency& targets, int errMask, float vbat) {
+  if (!LittleFS.exists("/spool")) {
+    LittleFS.mkdir("/spool");
+  }
+
   File f = LittleFS.open("/spool/pending.jsonl", "a");
-  if (!f) return;
+  if (!f) {
+    Serial.println("[Spool] CRITICAL ERROR: Failed to open /spool/pending.jsonl for writing");
+    return;
+  }
 
   JsonDocument doc;
   doc["t"]       = epochSec;
@@ -386,7 +413,11 @@ void appendRecordToSpool(unsigned long epochSec, unsigned long relMillis, int rs
 
   serializeJson(doc, f);
   f.println();
+  size_t sz = f.size();
   f.close();
+
+  Serial.printf("[Spool] Appended record to flash (t=%lu, rel_ms=%lu, total size=%u bytes)\n",
+                epochSec, relMillis, (unsigned int)sz);
 }
 
 void syncNTP() {
@@ -619,35 +650,34 @@ void rotateSubmittedLog() {
 }
 
 void markSpoolAsSubmitted() {
-  if (!LittleFS.exists("/spool/pending.jsonl")) return;
-
-  File readFile = LittleFS.open("/spool/pending.jsonl", "r");
-  if (!readFile) return;
-
-  File subFile = LittleFS.open("/spool/submitted.jsonl", "a");
-  if (!subFile) {
-    readFile.close();
-    return;
+  if (!LittleFS.exists("/spool")) {
+    LittleFS.mkdir("/spool");
   }
 
   int count = 0;
-  while (readFile.available()) {
-    String line = readFile.readStringUntil('\n');
-    if (line.length() < 10) continue;
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, line);
-    if (!err) {
-      doc["sub"] = true;
-      serializeJson(doc, subFile);
-      subFile.println();
-      count++;
+  if (LittleFS.exists("/spool/pending.jsonl")) {
+    File readFile = LittleFS.open("/spool/pending.jsonl", "r");
+    if (readFile) {
+      File subFile = LittleFS.open("/spool/submitted.jsonl", "a");
+      if (subFile) {
+        while (readFile.available()) {
+          String line = readFile.readStringUntil('\n');
+          if (line.length() < 10) continue;
+          JsonDocument doc;
+          DeserializationError err = deserializeJson(doc, line);
+          if (!err) {
+            doc["sub"] = true;
+            serializeJson(doc, subFile);
+            subFile.println();
+            count++;
+          }
+        }
+        subFile.close();
+      }
+      readFile.close();
     }
+    LittleFS.remove("/spool/pending.jsonl");
   }
-  readFile.close();
-  subFile.close();
-
-  // Clear pending spool since all records are confirmed submitted
-  LittleFS.remove("/spool/pending.jsonl");
 
   // Keep submitted.jsonl bounded (max ~64KB)
   File checkFile = LittleFS.open("/spool/submitted.jsonl", "r");
@@ -677,6 +707,18 @@ void markSpoolAsSubmitted() {
 // ---------- Batch Ingestion & Backlog Handling ----------
 
 bool postSpoolToWorker(const char* ssid, const char* pass) {
+  if (!LittleFS.exists("/spool/pending.jsonl")) {
+    Serial.println("[Upload] No pending records file (/spool/pending.jsonl does not exist)");
+    return false;
+  }
+
+  File f = LittleFS.open("/spool/pending.jsonl", "r");
+  if (!f || f.size() < 10) {
+    if (f) f.close();
+    Serial.println("[Upload] Spool file is empty or unreadable");
+    return false;
+  }
+
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, pass);
   unsigned long t0 = millis();
@@ -685,17 +727,11 @@ bool postSpoolToWorker(const char* ssid, const char* pass) {
   }
   if (WiFi.status() != WL_CONNECTED) {
     Serial.printf("[Upload] Wi-Fi connection to '%s' failed\n", ssid);
+    f.close();
     return false;
   }
 
   if (!ntpSynchronized) syncNTP();
-
-  File f = LittleFS.open("/spool/pending.jsonl", "r");
-  if (!f) {
-    WiFi.disconnect(true);
-    Serial.println("[Upload] No pending records in spool");
-    return true;
-  }
 
   // Build batch payload
   JsonDocument doc;
@@ -741,8 +777,8 @@ bool postSpoolToWorker(const char* ssid, const char* pass) {
 
   if (recs.size() == 0) {
     WiFi.disconnect(true);
-    Serial.println("[Upload] No valid timestamped records to submit");
-    return true;
+    Serial.println("[Upload] No valid timestamped records in spool to submit");
+    return false;
   }
 
   String payload;
@@ -900,7 +936,7 @@ void checkDailyUpload() {
 void checkInitialUpload() {
   if (spoolState.initial_submitted) return;
 
-  Serial.println("[Startup] New station setup detected. Submitting initial telemetry to GitHub...");
+  Serial.println("[Startup] Initial setup upload pending. Attempting submission to GitHub...");
   bool ok = postSpoolToWorker(config.monitored_ssid, config.monitored_pass);
   if (!ok && strlen(config.fallback_ssid) > 0) {
     Serial.println("[Startup] Primary failed, attempting Fallback Network for initial submission...");
@@ -909,7 +945,7 @@ void checkInitialUpload() {
   if (ok) {
     Serial.println("[Startup] Initial submission confirmed! Station registered on GitHub.");
   } else {
-    Serial.println("[Startup] Initial submission failed. Will retry on next probe cycle.");
+    Serial.println("[Startup] Initial submission not yet completed. Will retry on next probe cycle.");
   }
 }
 
@@ -922,6 +958,7 @@ void setup() {
   digitalWrite(PIN_LED, LOW);
   analogReadResolution(12);
 
+  initFileSystem();
   loadConfig();
   loadSpoolState();
 

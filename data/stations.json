@@ -1,5 +1,19 @@
 [
   {
+    "id": "C-103",
+    "name": "Room C-103",
+    "location": "Science Building C, Room 103",
+    "monitored_network": "School-Guest",
+    "fallback_network": "S24",
+    "probe_interval_min": 10,
+    "first_seen": "2026-11-11T18:47:39Z",
+    "last_seen": "2026-11-12T12:59:50Z",
+    "battery_mv": 4149,
+    "battery_pct": 96,
+    "visible_networks": 41,
+    "status": "online"
+  },
+  {
     "id": "C-703",
     "name": "Room C-703",
     "location": "Science Building C, Room 703",
