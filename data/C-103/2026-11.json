@@ -181,6 +181,26 @@
       "status": "red",
       "avg_rssi": -38,
       "avg_battery_mv": 4151
+    },
+    "2026-11-12T15:00:00:00Z": {
+      "samples": 5,
+      "successful": 2,
+      "avg_assoc_ms": 2756,
+      "avg_dhcp_ms": 1,
+      "avg_http_latency_ms": 241,
+      "status": "orange",
+      "avg_rssi": -41,
+      "avg_battery_mv": 4146
+    },
+    "2026-11-12T16:00:00:00Z": {
+      "samples": 1,
+      "successful": 0,
+      "avg_assoc_ms": 0,
+      "avg_dhcp_ms": 0,
+      "avg_http_latency_ms": 302,
+      "status": "red",
+      "avg_rssi": -38,
+      "avg_battery_mv": 4148
     }
   }
 }
