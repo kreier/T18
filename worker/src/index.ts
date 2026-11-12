@@ -93,7 +93,7 @@ export default {
 
     // Health check
     if (request.method === 'GET' && url.pathname === '/') {
-      return new Response(JSON.stringify({ service: 'T18 Telemetry Gateway', status: 'healthy', version: '1.1.0' }), {
+      return new Response(JSON.stringify({ service: 'T18 Telemetry Gateway', status: 'healthy', version: '0.4.1' }), {
         headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       });
     }
@@ -216,7 +216,7 @@ export default {
 
           const date = new Date(rec.timestamp * 1000);
           date.setUTCMinutes(0, 0, 0);
-          const isoHour = date.toISOString().replace(/:\d\d\.\d\d\dZ$/, ':00:00Z');
+          const isoHour = date.toISOString().slice(0, 13) + ':00:00Z';
 
           const bucket = hourlyBuckets.get(isoHour) || [];
           bucket.push(rec);

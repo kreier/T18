@@ -47,6 +47,24 @@ async function fetchJsonWithFallback(path) {
 }
 
 /**
+ * Load version metadata dynamically from repository
+ */
+async function loadVersion() {
+  try {
+    const data = await fetchJsonWithFallback('version.json');
+    if (data && data.version) {
+      const vStr = `v${data.version}`;
+      const vBadge = document.getElementById('app-version');
+      if (vBadge) vBadge.textContent = vStr;
+      const vFooter = document.getElementById('footer-version');
+      if (vFooter) vFooter.textContent = vStr;
+    }
+  } catch (err) {
+    console.warn('Could not load version.json', err);
+  }
+}
+
+/**
  * Load stations registry
  */
 async function loadStations() {
@@ -141,7 +159,8 @@ async function loadStationData(stationId) {
       const data = await fetchJsonWithFallback(`../data/${stationId}/${ym}.json`);
       if (data && data.hours) {
         Object.entries(data.hours).forEach(([isoHour, record]) => {
-          currentTelemetryData.set(isoHour, record);
+          const normKey = isoHour.slice(0, 13) + ':00:00Z';
+          currentTelemetryData.set(normKey, record);
         });
       }
     } catch (e) {
@@ -226,7 +245,7 @@ function renderHeatmap() {
 
       // Convert back to UTC to match JSON hour keys
       const utcSlot = new Date(localSlot.getTime() - currentTzOffset * 3600000);
-      const isoHourUTC = utcSlot.toISOString().replace(/:\d\d\.\d\d\dZ$/, ':00:00Z');
+      const isoHourUTC = utcSlot.toISOString().slice(0, 13) + ':00:00Z';
 
       const cell = document.createElement('div');
       cell.className = 'cell';
@@ -329,4 +348,7 @@ timezoneSelect.addEventListener('change', (e) => {
 });
 
 // Init
-document.addEventListener('DOMContentLoaded', loadStations);
+document.addEventListener('DOMContentLoaded', () => {
+  loadVersion();
+  loadStations();
+});

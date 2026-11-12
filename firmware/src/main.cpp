@@ -736,7 +736,7 @@ bool postSpoolToWorker(const char* ssid, const char* pass) {
   // Build batch payload
   JsonDocument doc;
   doc["station_id"]   = config.station_id;
-  doc["firmware"]     = "0.4.0";
+  doc["firmware"]     = "0.4.1";
   doc["battery_mv"]   = (int)(readBatteryVoltage() * 1000.0f);
   doc["battery_pct"]  = batteryPercent(readBatteryVoltage());
 

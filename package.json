@@ -1,0 +1,11 @@
+{
+  "name": "t18-network-monitor",
+  "version": "0.4.1",
+  "description": "Distributed ESP32 Wi-Fi Reliability Monitor & Telemetry Pipeline",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kreier/T18.git"
+  },
+  "author": "Matthias Kreier",
+  "license": "MIT"
+}
