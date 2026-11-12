@@ -171,6 +171,16 @@
       "status": "orange",
       "avg_rssi": -36,
       "avg_battery_mv": 4150
+    },
+    "2026-11-12T14:00:00:00Z": {
+      "samples": 1,
+      "successful": 0,
+      "avg_assoc_ms": 0,
+      "avg_dhcp_ms": 0,
+      "avg_http_latency_ms": 218,
+      "status": "red",
+      "avg_rssi": -37,
+      "avg_battery_mv": 4149
     }
   }
 }
