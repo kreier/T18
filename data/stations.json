@@ -11,9 +11,9 @@
     "monitored_network": "School-Guest",
     "probe_interval_min": 10,
     "first_seen": "2026-11-11T18:47:39Z",
-    "last_seen": "2026-11-12T16:03:22.602Z",
-    "battery_mv": 4147,
-    "battery_pct": 95,
+    "last_seen": "2026-11-12T18:49:23.201Z",
+    "battery_mv": 4188,
+    "battery_pct": 99,
     "visible_networks": 41,
     "status": "online"
   },
