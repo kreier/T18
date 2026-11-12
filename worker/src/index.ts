@@ -93,7 +93,7 @@ export default {
 
     // Health check
     if (request.method === 'GET' && url.pathname === '/') {
-      return new Response(JSON.stringify({ service: 'T18 Telemetry Gateway', status: 'healthy', version: '0.4.1' }), {
+      return new Response(JSON.stringify({ service: 'T18 Telemetry Gateway', status: 'healthy', version: '0.4.2' }), {
         headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       });
     }

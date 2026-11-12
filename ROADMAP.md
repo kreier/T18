@@ -54,11 +54,13 @@ This roadmap tracks the development of the T18 Network Reliability Monitor acros
 - [x] Implement GitHub Pages static application (`docs/index.html`).
 - [x] Station selector dropdown reading `data/stations.json`.
 - [x] 53-Day × 24-Hour interactive CSS Grid heatmap with local ICT (UTC+7) and UTC toggle.
-- [x] Dynamic version badge loaded from repository `version.json` (v0.4.1).
-- [x] Bug fix: UTC ISO hour key normalization in heatmap lookup and Cloudflare ingestion.
+- [x] Dynamic version badge loaded from repository `version.json` (v0.4.2).
+- [x] Dark Mode / Light Mode theme toggle with system preference detection and localStorage persistence (v0.4.2).
+- [x] Fixed heatmap cell CSS specificity so status colors (green, orange, purple, red) display properly instead of gray (v0.4.2).
+- [x] Bug fix: UTC ISO hour key normalization in heatmap lookup and Cloudflare ingestion (v0.4.1).
 - [x] Tooltips with drill-down metrics (samples, association time, DHCP time, latencies, battery).
 - [ ] Battery drain trend curve over 53 days.
-- [ ] Dark / Light theme support and mobile responsiveness.
+- [ ] Mobile responsiveness polish.
 
 ---
 

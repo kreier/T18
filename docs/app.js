@@ -21,6 +21,7 @@ const metaSsid = document.getElementById('meta-ssid');
 const metaFallback = document.getElementById('meta-fallback');
 const metaBattery = document.getElementById('meta-battery');
 const metaNetworks = document.getElementById('meta-networks');
+const metaFirstSeen = document.getElementById('meta-first-seen');
 const metaLastSeen = document.getElementById('meta-last-seen');
 const heatmapContainer = document.getElementById('heatmap-container');
 const detailTitle = document.getElementById('detail-title');
@@ -112,6 +113,7 @@ async function selectStation(stationId) {
   if (metaFallback) metaFallback.textContent = currentStation.fallback_network || 'S24';
   metaBattery.textContent = `${(currentStation.battery_mv / 1000).toFixed(2)}V (${currentStation.battery_pct}%)`;
   if (metaNetworks) metaNetworks.textContent = currentStation.visible_networks ? `${currentStation.visible_networks} SSIDs` : '12 SSIDs';
+  if (metaFirstSeen) metaFirstSeen.textContent = currentStation.first_seen ? formatDateTime(new Date(currentStation.first_seen)) : 'N/A';
   metaLastSeen.textContent = currentStation.last_seen ? formatDateTime(new Date(currentStation.last_seen)) : 'N/A';
 
   await loadStationData(stationId);
@@ -340,15 +342,55 @@ function showDetail(localSlot, isoHourUTC, record) {
   `;
 }
 
+/**
+ * Dark / Light Theme Manager
+ */
+function initTheme() {
+  const toggleBtn = document.getElementById('theme-toggle');
+  const label = document.getElementById('theme-label');
+
+  function getPreferredTheme() {
+    const saved = localStorage.getItem('t18_theme');
+    if (saved) return saved;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+
+  function applyTheme(theme) {
+    if (theme === 'light') {
+      document.documentElement.setAttribute('data-theme', 'light');
+      if (label) label.textContent = 'Dark';
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+      if (label) label.textContent = 'Light';
+    }
+    localStorage.setItem('t18_theme', theme);
+  }
+
+  const initialTheme = getPreferredTheme();
+  applyTheme(initialTheme);
+
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', () => {
+      const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+      applyTheme(isLight ? 'dark' : 'light');
+    });
+  }
+}
+
 // Event Listeners
 stationSelect.addEventListener('change', (e) => selectStation(e.target.value));
 timezoneSelect.addEventListener('change', (e) => {
   currentTzOffset = parseInt(e.target.value, 10);
+  if (currentStation) {
+    if (metaFirstSeen) metaFirstSeen.textContent = currentStation.first_seen ? formatDateTime(new Date(currentStation.first_seen)) : 'N/A';
+    if (metaLastSeen) metaLastSeen.textContent = currentStation.last_seen ? formatDateTime(new Date(currentStation.last_seen)) : 'N/A';
+  }
   renderHeatmap();
 });
 
 // Init
 document.addEventListener('DOMContentLoaded', () => {
+  initTheme();
   loadVersion();
   loadStations();
 });

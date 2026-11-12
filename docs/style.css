@@ -14,6 +14,24 @@
   --color-daytime: #1f6feb22;
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
+  --shadow-tooltip: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="light"] {
+  --bg-color: #f6f8fa;
+  --card-bg: #ffffff;
+  --card-border: #d0d7de;
+  --text-main: #1f2328;
+  --text-muted: #656d76;
+  --color-green: #2da44e;
+  --color-green-hover: #2c974b;
+  --color-orange: #bf8700;
+  --color-purple: #8250df;
+  --color-red: #cf222e;
+  --color-gray: #ebedf0;
+  --color-grid-hover: #0969da;
+  --color-daytime: rgba(9, 105, 218, 0.08);
+  --shadow-tooltip: 0 8px 24px rgba(140, 149, 159, 0.2);
 }
 
 * {
@@ -122,6 +140,49 @@ select:focus {
   border-color: var(--color-grid-hover);
 }
 
+.theme-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background-color: var(--card-bg);
+  border: 1px solid var(--card-border);
+  color: var(--text-main);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.theme-toggle-btn:hover {
+  border-color: var(--color-grid-hover);
+  background-color: var(--bg-color);
+}
+
+.theme-toggle-btn svg {
+  display: block;
+}
+
+/* Theme Icon switching */
+:root:not([data-theme="light"]) .sun-icon {
+  display: block;
+  color: #e3b341;
+}
+:root:not([data-theme="light"]) .moon-icon {
+  display: none;
+}
+
+[data-theme="light"] .sun-icon {
+  display: none;
+}
+[data-theme="light"] .moon-icon {
+  display: block;
+  color: #656d76;
+}
+
 .station-meta-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -179,7 +240,7 @@ select:focus {
 
 .tz-indicator {
   font-size: 12px;
-  color: #58a6ff;
+  color: var(--color-grid-hover);
   display: block;
   margin-top: 2px;
 }
@@ -205,12 +266,6 @@ select:focus {
   border-radius: 2px;
   display: inline-block;
 }
-
-.color-green { background-color: var(--color-green); }
-.color-orange { background-color: var(--color-orange); }
-.color-purple { background-color: var(--color-purple); }
-.color-red { background-color: var(--color-red); }
-.color-gray { background-color: var(--color-gray); }
 
 .heatmap-scroll-container {
   overflow-x: auto;
@@ -244,7 +299,7 @@ select:focus {
 }
 
 .hour-axis-label.daytime {
-  color: #58a6ff;
+  color: var(--color-grid-hover);
   font-weight: 600;
 }
 
@@ -262,6 +317,7 @@ select:focus {
   height: 16px;
 }
 
+/* Base cell styling */
 .cell {
   width: 14px;
   height: 14px;
@@ -270,10 +326,19 @@ select:focus {
   background-color: var(--color-gray);
   transition: transform 0.1s ease, outline 0.1s ease;
   position: relative;
+  box-sizing: border-box;
 }
 
 .cell.daytime-cell {
-  border: 1px solid rgba(88, 166, 255, 0.15);
+  border: 1px solid rgba(88, 166, 255, 0.35);
+}
+
+[data-theme="light"] .cell.daytime-cell {
+  border: 1px solid rgba(9, 105, 218, 0.45);
+}
+
+[data-theme="light"] .cell.color-gray {
+  border: 1px solid rgba(27, 31, 36, 0.08);
 }
 
 .cell:hover {
@@ -281,6 +346,19 @@ select:focus {
   transform: scale(1.25);
   z-index: 10;
 }
+
+/* Status colors with high specificity to prevent .cell cascade overrides */
+.box.color-green, .cell.color-green { background-color: var(--color-green) !important; }
+.box.color-orange, .cell.color-orange { background-color: var(--color-orange) !important; }
+.box.color-purple, .cell.color-purple { background-color: var(--color-purple) !important; }
+.box.color-red, .cell.color-red { background-color: var(--color-red) !important; }
+.box.color-gray, .cell.color-gray { background-color: var(--color-gray) !important; }
+
+.color-green { background-color: var(--color-green); }
+.color-orange { background-color: var(--color-orange); }
+.color-purple { background-color: var(--color-purple); }
+.color-red { background-color: var(--color-red); }
+.color-gray { background-color: var(--color-gray); }
 
 .heatmap-footer {
   display: flex;
@@ -354,8 +432,8 @@ select:focus {
 .tooltip {
   position: fixed;
   display: none;
-  background-color: #21262d;
-  color: #fff;
+  background-color: var(--card-bg);
+  color: var(--text-main);
   border: 1px solid var(--card-border);
   border-radius: 6px;
   padding: 8px 12px;
@@ -363,6 +441,6 @@ select:focus {
   line-height: 1.4;
   pointer-events: none;
   z-index: 1000;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  box-shadow: var(--shadow-tooltip);
   font-family: var(--font-sans);
 }
