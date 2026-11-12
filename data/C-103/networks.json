@@ -1,9 +1,9 @@
 {
   "station": "C-103",
   "monitored_networks": [
-    "School-Guest",
-    "School-Staff",
-    "Lab-IoT"
+    "Hofkoh",
+    "Saigon",
+    "iot"
   ],
   "daily": {
     "2026-11-12": {

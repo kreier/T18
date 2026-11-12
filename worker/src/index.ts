@@ -238,7 +238,7 @@ export default {
         const aggregatedHours: Record<string, HourlySummary> = {};
         for (const [isoHour, records] of hourlyBuckets.entries()) {
           const samples = records.length;
-          const successful = records.filter(r => r.assoc_ms > 0 && r.dhcp_ms > 0 && (!r.status || r.status === 'ok')).length;
+          const successful = records.filter(r => r.assoc_ms > 0 && (r.dhcp_ms === undefined || r.dhcp_ms >= 0) && (!r.status || r.status === 'ok')).length;
 
           let totalAssoc = 0;
           let totalDhcp = 0;

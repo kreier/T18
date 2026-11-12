@@ -2,19 +2,20 @@
   {
     "id": "C-103",
     "name": "Room C-103",
-    "location": "Science Building C, Room 103",
+    "location": "Science Lab 103",
     "monitored_networks": [
-      "School-Guest",
-      "School-Staff",
-      "Lab-IoT"
+      "Hofkoh",
+      "Saigon",
+      "iot"
     ],
-    "monitored_network": "School-Guest",
+    "monitored_network": "Hofkoh",
+    "fallback_network": "S24",
     "probe_interval_min": 10,
     "first_seen": "2026-11-11T18:47:39Z",
     "last_seen": "2026-11-12T19:08:06.412Z",
-    "battery_mv": 4195,
-    "battery_pct": 99,
-    "visible_networks": 41,
+    "battery_mv": 4200,
+    "battery_pct": 100,
+    "visible_networks": 40,
     "status": "online"
   },
   {

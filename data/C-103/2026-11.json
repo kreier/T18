@@ -204,31 +204,31 @@
     },
     "2026-11-12T17:00:00:00Z": {
       "samples": 6,
-      "successful": 0,
-      "avg_assoc_ms": 0,
-      "avg_dhcp_ms": 0,
+      "successful": 6,
+      "avg_assoc_ms": 1540,
+      "avg_dhcp_ms": 1,
       "avg_http_latency_ms": 279,
-      "status": "red",
+      "status": "orange",
       "avg_rssi": -39,
       "avg_battery_mv": 4196
     },
     "2026-11-12T18:00:00:00Z": {
       "samples": 3,
-      "successful": 0,
-      "avg_assoc_ms": 0,
-      "avg_dhcp_ms": 0,
+      "successful": 3,
+      "avg_assoc_ms": 1550,
+      "avg_dhcp_ms": 1,
       "avg_http_latency_ms": 126,
-      "status": "red",
+      "status": "green",
       "avg_rssi": -40,
       "avg_battery_mv": 4183
     },
     "2026-11-12T19:00:00:00Z": {
       "samples": 3,
-      "successful": 0,
-      "avg_assoc_ms": 0,
-      "avg_dhcp_ms": 0,
+      "successful": 3,
+      "avg_assoc_ms": 1550,
+      "avg_dhcp_ms": 1,
       "avg_http_latency_ms": 178,
-      "status": "red",
+      "status": "orange",
       "avg_rssi": -45,
       "avg_battery_mv": 4196
     }

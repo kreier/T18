@@ -626,7 +626,8 @@ void probeSingleNetwork(const char* ssid, const char* pass) {
     }
 
     if (WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
-      dhcp_ms = millis() - t_dhcp0;
+      unsigned long elapsed = millis() - t_dhcp0;
+      dhcp_ms = (elapsed > 0) ? elapsed : 1;
       ip = WiFi.localIP().toString();
 
       // 3. HTTP Latency benchmarking
