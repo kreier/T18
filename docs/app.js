@@ -115,15 +115,25 @@ function formatDateTime(date) {
  */
 async function loadStationData(stationId) {
   currentTelemetryData.clear();
-  const today = new Date();
   const monthsToLoad = new Set();
 
-  for (let i = 0; i < DAYS_TO_SHOW; i++) {
-    const d = new Date(today);
-    d.setDate(d.getDate() - i);
-    const yyyy = d.getUTCFullYear();
-    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-    monthsToLoad.add(`${yyyy}-${mm}`);
+  // Determine reference dates from current station metadata and browser time
+  const refDates = [new Date()];
+  if (currentStation && currentStation.last_seen) {
+    const lsDate = new Date(currentStation.last_seen);
+    if (!isNaN(lsDate.getTime())) {
+      refDates.push(lsDate);
+    }
+  }
+
+  for (const ref of refDates) {
+    for (let i = 0; i < DAYS_TO_SHOW; i++) {
+      const d = new Date(ref);
+      d.setDate(d.getDate() - i);
+      const yyyy = d.getUTCFullYear();
+      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+      monthsToLoad.add(`${yyyy}-${mm}`);
+    }
   }
 
   for (const ym of monthsToLoad) {
@@ -175,9 +185,22 @@ function renderHeatmap() {
   heatmapContainer.appendChild(hourAxis);
 
   // 2. 53 Day Columns
-  const now = new Date();
-  // Adjust now to local calendar date
-  const localNow = new Date(now.getTime() + currentTzOffset * 3600000);
+  // Anchor the 53-day grid to the station's latest recorded telemetry or last_seen
+  let anchorDate = new Date();
+  if (currentTelemetryData.size > 0) {
+    let maxTs = 0;
+    for (const isoKey of currentTelemetryData.keys()) {
+      const ts = new Date(isoKey).getTime();
+      if (ts > maxTs) maxTs = ts;
+    }
+    if (maxTs > 0) anchorDate = new Date(maxTs);
+  } else if (currentStation && currentStation.last_seen) {
+    const parsed = new Date(currentStation.last_seen);
+    if (!isNaN(parsed.getTime())) anchorDate = parsed;
+  }
+
+  // Adjust anchor to local calendar date
+  const localNow = new Date(anchorDate.getTime() + currentTzOffset * 3600000);
   const localTodayMidnight = new Date(Date.UTC(localNow.getUTCFullYear(), localNow.getUTCMonth(), localNow.getUTCDate(), 0, 0, 0));
 
   for (let dayOffset = DAYS_TO_SHOW - 1; dayOffset >= 0; dayOffset--) {
