@@ -1,18 +1,20 @@
 /**
  * T18 Network Reliability Monitor Firmware
  * Hardware: TTGO T18 (LilyGo T-Energy v3.0) ESP32
+ * Version: 0.5.1
  *
  * Features:
  * - Cold-boot Soft-AP portal (60s timeout, canceled on client connection)
- * - Web configuration stored in LittleFS (/config.json)
+ * - Web configuration stored in LittleFS (/config.json) with configurable Location
+ * - Configurable Fallback Network ("S24") with enable/disable switch (backup only, never monitored)
  * - Light sleep cycle (default: 10 min) with clock continuity
  * - Sequential Wi-Fi association & DHCP benchmarking (15s / 10s timeouts)
  * - HTTP target latency probes (3s timeout): 1.1.1.1, Google, Fast.com, Cloudflare
  * - Hourly Live Heartbeat to Cloudflare Worker (battery, RSSI, status, visible networks count)
  * - Offline millis() buffering with retroactive NTP timestamp mapping
- * - Initial submission to GitHub on station setup for immediate verification
+ * - Immediate initial assessment submission to GitHub on station setup for immediate verification
  * - Automatic backlog / catch-up check for unsubmitted old collected data
- * - Daily ingestion batch upload (19:00 - 21:00 UTC) with fallback network
+ * - Daily ingestion batch upload (19:00 - 21:00 UTC) with fallback network support
  * - Two-way confirmation: data marked submitted in flash only upon worker commit confirmation
  */
 
@@ -59,10 +61,12 @@ static const int MAX_MONITORED_NETWORKS = 4;
 
 struct StationConfig {
   char station_id[32]        = "C-103";
+  char location[64]          = "Science Building C, Room 103";
   MonitoredNetwork monitored[MAX_MONITORED_NETWORKS];
   int  monitored_count       = 1;
   char monitored_ssid[32]    = "School-Guest";
   char monitored_pass[64]    = "";
+  bool fallback_enabled      = true;
   char fallback_ssid[32]     = "S24";
   char fallback_pass[64]     = "12345678";
   int  interval_min          = 10;
@@ -99,13 +103,13 @@ void loadConfig();
 void saveConfig();
 void loadSpoolState();
 void saveSpoolState();
-void appendRecordToSpool(unsigned long epochSec, unsigned long relMillis, int rssi, int ch,
-                        unsigned long assoc_ms, unsigned long dhcp_ms, const char* ip,
-                        const TargetLatency& targets, int errMask, float vbat);
-void sendHourlyHeartbeat(float vbat, int rssi, unsigned long assoc_ms, unsigned long dhcp_ms,
-                         const TargetLatency& targets, int errMask, time_t epochSec);
+void appendRecordToSpool(unsigned long epochSec, unsigned long relMillis, const char* ssid,
+                        int rssi, int ch, unsigned long assoc_ms, unsigned long dhcp_ms,
+                        const char* ip, const TargetLatency& targets, int errMask, float vbat);
+void sendHourlyHeartbeat(float vbat, time_t epochSec);
 void retroactivelyMapSpoolTimestamps();
 int  probeHttpTarget(const char* url);
+void probeSingleNetwork(const char* ssid, const char* pass);
 void markSpoolAsSubmitted();
 void rotateSubmittedLog();
 bool hasUnsubmittedOldData();
@@ -113,6 +117,7 @@ void checkUnsubmittedData();
 void checkDailyUpload();
 void checkInitialUpload();
 bool postSpoolToWorker(const char* ssid, const char* pass);
+bool uploadSpoolWithFallback();
 
 // ---------- Helper Functions ----------
 
@@ -166,8 +171,9 @@ void loadConfig() {
   f.close();
 
   if (!err) {
-    strlcpy(config.station_id,     doc["station_id"]     | config.station_id,     sizeof(config.station_id));
-    
+    strlcpy(config.station_id, doc["station_id"] | config.station_id, sizeof(config.station_id));
+    strlcpy(config.location,   doc["location"]   | config.location,   sizeof(config.location));
+
     // Load multiple monitored networks if array exists
     if (doc.containsKey("monitored_networks") && doc["monitored_networks"].is<JsonArray>()) {
       JsonArray arr = doc["monitored_networks"];
@@ -190,12 +196,15 @@ void loadConfig() {
       strlcpy(config.monitored_pass, config.monitored[0].pass, sizeof(config.monitored_pass));
     }
 
+    config.fallback_enabled = doc.containsKey("fallback_enabled") ? doc["fallback_enabled"].as<bool>() : true;
     strlcpy(config.fallback_ssid,  doc["fallback_ssid"]  | config.fallback_ssid,  sizeof(config.fallback_ssid));
     strlcpy(config.fallback_pass,  doc["fallback_pass"]  | config.fallback_pass,  sizeof(config.fallback_pass));
     config.interval_min = doc["interval_min"] | config.interval_min;
     strlcpy(config.worker_url,     doc["worker_url"]     | config.worker_url,     sizeof(config.worker_url));
     strlcpy(config.auth_token,     doc["auth_token"]     | config.auth_token,     sizeof(config.auth_token));
-    Serial.printf("[Config] Loaded station: %s, Monitored networks: %d\n", config.station_id, config.monitored_count);
+    Serial.printf("[Config] Loaded station: %s, Location: %s, Monitored networks: %d, Fallback: %s (%s)\n",
+                  config.station_id, config.location, config.monitored_count, config.fallback_ssid,
+                  config.fallback_enabled ? "enabled" : "disabled");
   }
 }
 
@@ -207,7 +216,8 @@ void saveConfig() {
   }
 
   JsonDocument doc;
-  doc["station_id"]     = config.station_id;
+  doc["station_id"] = config.station_id;
+  doc["location"]   = config.location;
 
   JsonArray netArr = doc["monitored_networks"].to<JsonArray>();
   for (int i = 0; i < config.monitored_count; i++) {
@@ -218,13 +228,14 @@ void saveConfig() {
     }
   }
 
-  doc["monitored_ssid"] = config.monitored[0].ssid;
-  doc["monitored_pass"] = config.monitored[0].pass;
-  doc["fallback_ssid"]  = config.fallback_ssid;
-  doc["fallback_pass"]  = config.fallback_pass;
-  doc["interval_min"]   = config.interval_min;
-  doc["worker_url"]     = config.worker_url;
-  doc["auth_token"]     = config.auth_token;
+  doc["monitored_ssid"]   = config.monitored[0].ssid;
+  doc["monitored_pass"]   = config.monitored[0].pass;
+  doc["fallback_enabled"] = config.fallback_enabled;
+  doc["fallback_ssid"]    = config.fallback_ssid;
+  doc["fallback_pass"]    = config.fallback_pass;
+  doc["interval_min"]     = config.interval_min;
+  doc["worker_url"]       = config.worker_url;
+  doc["auth_token"]       = config.auth_token;
 
   serializeJson(doc, f);
   f.close();
@@ -294,6 +305,8 @@ const char PORTAL_HTML[] PROGMEM = R"HTML(
     label { display: block; margin-top: 10px; font-size: 12px; color: #94a3b8; }
     input, select { width: 100%; box-sizing: border-box; padding: 9px 12px; margin-top: 4px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #fff; font-size: 13px; }
     .net-box { background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; margin-bottom: 8px; }
+    .switch-label { display: flex; align-items: center; gap: 8px; cursor: pointer; margin-top: 0; font-size: 13px; color: #e2e8f0; font-weight: 500; }
+    .switch-label input[type="checkbox"] { width: auto; margin: 0; accent-color: #0284c7; }
     .btn { background: #0284c7; color: #fff; border: none; padding: 12px 20px; border-radius: 6px; font-weight: bold; width: 100%; margin-top: 24px; cursor: pointer; }
     .btn:hover { background: #0369a1; }
     .info { font-size: 12px; color: #64748b; margin-top: 6px; }
@@ -302,12 +315,15 @@ const char PORTAL_HTML[] PROGMEM = R"HTML(
 </head>
 <body>
   <div class="card">
-    <h1>T18 Station Setup (v0.5.0)</h1>
+    <h1>T18 Station Setup (v0.5.1)</h1>
     <div class="vbat">Battery: <strong>%VBAT% V (%BAT_PCT%%)</strong></div>
     <div class="vbat" style="margin-top:6px;">Status: <strong>%SUB_STATUS%</strong></div>
     <form action="/save" method="POST">
-      <label>Station ID / Location Name</label>
-      <input type="text" name="station_id" value="%STATION_ID%" required>
+      <label>Station ID</label>
+      <input type="text" name="station_id" value="%STATION_ID%" placeholder="e.g. C-103" required>
+
+      <label>Location</label>
+      <input type="text" name="location" value="%LOCATION%" placeholder="e.g. Science Building C, Room 103" required>
 
       <div class="section-title">Monitored Wi-Fi Networks</div>
       <div class="net-box">
@@ -331,6 +347,19 @@ const char PORTAL_HTML[] PROGMEM = R"HTML(
         <input type="password" name="mon_pass_3" value="%MON_PASS_3%">
       </div>
 
+      <div class="section-title">Fallback Network (Backup Only)</div>
+      <div class="net-box">
+        <label class="switch-label">
+          <input type="checkbox" name="fallback_enabled" value="1" %FB_ENABLED%>
+          <span>Enable Fallback Network</span>
+        </label>
+        <label>Fallback SSID</label>
+        <input type="text" name="fallback_ssid" value="%FB_SSID%" placeholder="S24">
+        <label>Fallback Password</label>
+        <input type="password" name="fallback_pass" value="%FB_PASS%" placeholder="12345678">
+        <div class="info">Used only if monitored networks fail to connect or have no internet access. This network is never monitored.</div>
+      </div>
+
       <label>Probe Interval (Minutes)</label>
       <input type="number" name="interval_min" min="1" max="60" value="%INTERVAL%">
 
@@ -342,7 +371,7 @@ const char PORTAL_HTML[] PROGMEM = R"HTML(
 
       <button type="submit" class="btn">Save & Reboot Station</button>
     </form>
-    <div class="info">Settings are committed to LittleFS. After reboot, initial telemetry and daily visible spectrum scans are submitted directly to GitHub.</div>
+    <div class="info">Settings are committed to LittleFS. After reboot, initial telemetry assessment is submitted immediately to GitHub and shown on GitHub Pages.</div>
   </div>
 </body>
 </html>
@@ -354,6 +383,7 @@ void handlePortalRoot() {
   html.replace("%VBAT%", String(v, 2));
   html.replace("%BAT_PCT%", String(batteryPercent(v)));
   html.replace("%STATION_ID%", config.station_id);
+  html.replace("%LOCATION%", config.location);
 
   html.replace("%MON_SSID_1%", config.monitored[0].ssid);
   html.replace("%MON_PASS_1%", config.monitored[0].pass);
@@ -361,6 +391,10 @@ void handlePortalRoot() {
   html.replace("%MON_PASS_2%", config.monitored[1].pass);
   html.replace("%MON_SSID_3%", config.monitored[2].ssid);
   html.replace("%MON_PASS_3%", config.monitored[2].pass);
+
+  html.replace("%FB_ENABLED%", config.fallback_enabled ? "checked" : "");
+  html.replace("%FB_SSID%", config.fallback_ssid);
+  html.replace("%FB_PASS%", config.fallback_pass);
 
   html.replace("%INTERVAL%", String(config.interval_min));
   html.replace("%WORKER_URL%", config.worker_url);
@@ -382,6 +416,7 @@ void handlePortalRoot() {
 
 void handlePortalSave() {
   if (server.hasArg("station_id")) strlcpy(config.station_id, server.arg("station_id").c_str(), sizeof(config.station_id));
+  if (server.hasArg("location"))   strlcpy(config.location,   server.arg("location").c_str(),   sizeof(config.location));
 
   config.monitored_count = 0;
   if (server.hasArg("mon_ssid_1") && server.arg("mon_ssid_1").length() > 0) {
@@ -405,6 +440,10 @@ void handlePortalSave() {
     strlcpy(config.monitored_pass, config.monitored[0].pass, sizeof(config.monitored_pass));
   }
 
+  config.fallback_enabled = server.hasArg("fallback_enabled");
+  if (server.hasArg("fallback_ssid")) strlcpy(config.fallback_ssid, server.arg("fallback_ssid").c_str(), sizeof(config.fallback_ssid));
+  if (server.hasArg("fallback_pass")) strlcpy(config.fallback_pass, server.arg("fallback_pass").c_str(), sizeof(config.fallback_pass));
+
   if (server.hasArg("interval_min")) config.interval_min = server.arg("interval_min").toInt();
   if (server.hasArg("worker_url"))   strlcpy(config.worker_url, server.arg("worker_url").c_str(), sizeof(config.worker_url));
   if (server.hasArg("auth_token"))   strlcpy(config.auth_token, server.arg("auth_token").c_str(), sizeof(config.auth_token));
@@ -416,9 +455,6 @@ void handlePortalSave() {
   saveSpoolState();
 
   server.send(200, "text/html", "<html><body style='font-family:sans-serif;background:#0f172a;color:#38bdf8;padding:40px;text-align:center;'><h2>Settings Saved!</h2><p>Rebooting station now...</p></body></html>");
-  delay(1000);
-  ESP.restart();
-}
   delay(1000);
   ESP.restart();
 }
@@ -461,9 +497,9 @@ int probeHttpTarget(const char* url) {
   return (code > 0) ? (int)elapsed : -1;
 }
 
-void appendRecordToSpool(unsigned long epochSec, unsigned long relMillis, int rssi, int ch,
-                        unsigned long assoc_ms, unsigned long dhcp_ms, const char* ip,
-                        const TargetLatency& targets, int errMask, float vbat) {
+void appendRecordToSpool(unsigned long epochSec, unsigned long relMillis, const char* ssid,
+                        int rssi, int ch, unsigned long assoc_ms, unsigned long dhcp_ms,
+                        const char* ip, const TargetLatency& targets, int errMask, float vbat) {
   if (!LittleFS.exists("/spool")) {
     LittleFS.mkdir("/spool");
   }
@@ -478,7 +514,7 @@ void appendRecordToSpool(unsigned long epochSec, unsigned long relMillis, int rs
   doc["t"]       = epochSec;
   doc["rel_ms"]  = relMillis;
   doc["synced"]  = ntpSynchronized;
-  doc["s"]       = config.monitored_ssid;
+  doc["s"]       = ssid;
   doc["r"]       = rssi;
   doc["ch"]      = ch;
   doc["a_ms"]    = assoc_ms;
@@ -497,8 +533,8 @@ void appendRecordToSpool(unsigned long epochSec, unsigned long relMillis, int rs
   size_t sz = f.size();
   f.close();
 
-  Serial.printf("[Spool] Appended record to flash (t=%lu, rel_ms=%lu, total size=%u bytes)\n",
-                epochSec, relMillis, (unsigned int)sz);
+  Serial.printf("[Spool] Appended record for '%s' to flash (t=%lu, rel_ms=%lu, total size=%u bytes)\n",
+                ssid, epochSec, relMillis, (unsigned int)sz);
 }
 
 void syncNTP() {
@@ -559,72 +595,11 @@ void retroactivelyMapSpoolTimestamps() {
   }
 }
 
-// Send lightweight hourly heartbeat to Cloudflare Worker
-void sendHourlyHeartbeat(float vbat, int rssi, unsigned long assoc_ms, unsigned long dhcp_ms,
-                         const TargetLatency& targets, int errMask, time_t epochSec) {
-  // Quick Wi-Fi scan to count visible networks
-  int visible = WiFi.scanNetworks(false, true);
-  WiFi.scanDelete();
-
-  int totalLatency = 0;
-  int countLatency = 0;
-  if (targets.one_one_one_one > 0) { totalLatency += targets.one_one_one_one; countLatency++; }
-  if (targets.google > 0)          { totalLatency += targets.google; countLatency++; }
-  if (targets.fast > 0)            { totalLatency += targets.fast; countLatency++; }
-  if (targets.cloudflare > 0)      { totalLatency += targets.cloudflare; countLatency++; }
-  int avgLatency = countLatency > 0 ? (totalLatency / countLatency) : 0;
-
-  const char* status = "green";
-  if (errMask != 0) {
-    status = (errMask == 1) ? "red" : "orange";
-  } else if (avgLatency > 150) {
-    status = "orange";
-  } else if (assoc_ms > 4000 || dhcp_ms > 3000) {
-    status = "purple";
-  }
-
-  // Derive heartbeat URL from worker_url (replace /ingest with /heartbeat)
-  String hbUrl = config.worker_url;
-  int idx = hbUrl.lastIndexOf('/');
-  if (idx > 0) {
-    hbUrl = hbUrl.substring(0, idx) + "/heartbeat";
-  }
-
-  JsonDocument doc;
-  doc["station_id"]           = config.station_id;
-  doc["timestamp"]            = epochSec;
-  doc["battery_mv"]           = (int)(vbat * 1000.0f);
-  doc["battery_pct"]          = batteryPercent(vbat);
-  doc["rssi"]                 = rssi;
-  doc["visible_networks"]     = visible;
-  doc["status"]               = status;
-  doc["last_assoc_ms"]        = assoc_ms;
-  doc["last_dhcp_ms"]         = dhcp_ms;
-  doc["last_http_latency_ms"] = avgLatency;
-
-  String payload;
-  serializeJson(doc, payload);
-
-  HTTPClient http;
-  http.setTimeout(4000);
-  http.begin(hbUrl);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("Authorization", String("Bearer ") + config.auth_token);
-
-  int code = http.POST(payload);
-  http.end();
-  Serial.printf("[Heartbeat] Sent hourly ping to %s -> HTTP %d (networks: %d, battery: %.2fV)\n",
-                hbUrl.c_str(), code, visible, vbat);
-}
-
-void runMeasurement() {
-  digitalWrite(PIN_LED, HIGH);
-  float vbat = readBatteryVoltage();
-  Serial.printf("[Probe] Battery: %.2fV (%d%%)\n", vbat, batteryPercent(vbat));
-
+// Probes a single network and logs the benchmark record to spool
+void probeSingleNetwork(const char* ssid, const char* pass) {
   WiFi.mode(WIFI_STA);
   unsigned long t0 = millis();
-  WiFi.begin(config.monitored_ssid, config.monitored_pass);
+  WiFi.begin(ssid, pass);
 
   unsigned long assoc_ms = 0;
   unsigned long dhcp_ms  = 0;
@@ -660,19 +635,9 @@ void runMeasurement() {
       targets.fast            = probeHttpTarget("http://fast.com");
       targets.cloudflare      = probeHttpTarget("http://cloudflare.com");
 
-      // Try NTP sync if not yet synchronized
+      // Sync NTP if needed
       if (!ntpSynchronized) {
         syncNTP();
-      }
-
-      // Check if we should send an hourly heartbeat update
-      if (ntpSynchronized) {
-        time_t now = ntpBaseEpoch + (millis() - ntpBaseMillis) / 1000;
-        struct tm* ptm = gmtime(&now);
-        if (ptm && ptm->tm_hour != lastHeartbeatHour) {
-          sendHourlyHeartbeat(vbat, rssi, assoc_ms, dhcp_ms, targets, errMask, now);
-          lastHeartbeatHour = ptm->tm_hour;
-        }
       }
     } else {
       errMask |= 2; // DHCP timeout
@@ -689,8 +654,106 @@ void runMeasurement() {
     currentEpoch = ntpBaseEpoch + (millis() - ntpBaseMillis) / 1000;
   }
 
-  appendRecordToSpool(currentEpoch, millis(), rssi, channel, assoc_ms, dhcp_ms, ip.c_str(), targets, errMask, vbat);
-  Serial.printf("[Probe] Assoc: %lu ms, DHCP: %lu ms, Err: %d\n", assoc_ms, dhcp_ms, errMask);
+  float vbat = readBatteryVoltage();
+  appendRecordToSpool(currentEpoch, millis(), ssid, rssi, channel, assoc_ms, dhcp_ms, ip.c_str(), targets, errMask, vbat);
+  Serial.printf("[Probe] Network '%s': Assoc=%lu ms, DHCP=%lu ms, Err=%d, RSSI=%d\n", ssid, assoc_ms, dhcp_ms, errMask, rssi);
+}
+
+// Send lightweight hourly heartbeat to Cloudflare Worker
+void sendHourlyHeartbeat(float vbat, time_t epochSec) {
+  int visible = WiFi.scanNetworks(false, true);
+  WiFi.scanDelete();
+
+  String hbUrl = config.worker_url;
+  int idx = hbUrl.lastIndexOf('/');
+  if (idx > 0) {
+    hbUrl = hbUrl.substring(0, idx) + "/heartbeat";
+  }
+
+  JsonDocument doc;
+  doc["station_id"]           = config.station_id;
+  doc["station_name"]         = config.station_id;
+  doc["location"]             = config.location;
+  doc["timestamp"]            = epochSec;
+  doc["battery_mv"]           = (int)(vbat * 1000.0f);
+  doc["battery_pct"]          = batteryPercent(vbat);
+  doc["visible_networks"]     = visible > 0 ? visible : 0;
+  doc["status"]               = "green";
+
+  JsonArray netArr = doc["monitored_networks"].to<JsonArray>();
+  for (int i = 0; i < config.monitored_count; i++) {
+    if (strlen(config.monitored[i].ssid) > 0) {
+      netArr.add(config.monitored[i].ssid);
+    }
+  }
+
+  String payload;
+  serializeJson(doc, payload);
+
+  auto tryPostHeartbeat = [&](const char* ssid, const char* pass) -> bool {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, pass);
+    unsigned long t0 = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - t0) < 10000) {
+      delay(50);
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      WiFi.disconnect(true);
+      return false;
+    }
+
+    HTTPClient http;
+    http.setTimeout(4000);
+    http.begin(hbUrl);
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("Authorization", String("Bearer ") + config.auth_token);
+
+    int code = http.POST(payload);
+    http.end();
+    WiFi.disconnect(true);
+    return (code == 200 || code == 201);
+  };
+
+  bool ok = false;
+  for (int i = 0; i < config.monitored_count; i++) {
+    if (strlen(config.monitored[i].ssid) > 0) {
+      ok = tryPostHeartbeat(config.monitored[i].ssid, config.monitored[i].pass);
+      if (ok) break;
+    }
+  }
+
+  if (!ok && config.fallback_enabled && strlen(config.fallback_ssid) > 0) {
+    Serial.println("[Heartbeat] Primary networks failed, attempting fallback network for ping...");
+    ok = tryPostHeartbeat(config.fallback_ssid, config.fallback_pass);
+  }
+
+  Serial.printf("[Heartbeat] Hourly ping result: %s (visible: %d, battery: %.2fV)\n",
+                ok ? "OK" : "FAILED", visible, vbat);
+}
+
+void runMeasurement() {
+  digitalWrite(PIN_LED, HIGH);
+  float vbat = readBatteryVoltage();
+  Serial.printf("[Probe] Battery: %.2fV (%d%%)\n", vbat, batteryPercent(vbat));
+
+  // Sequentially assess all configured monitored networks (fallback is NOT monitored)
+  for (int i = 0; i < config.monitored_count; i++) {
+    if (strlen(config.monitored[i].ssid) > 0) {
+      Serial.printf("[Probe] Assessing network %d/%d: '%s'...\n", i + 1, config.monitored_count, config.monitored[i].ssid);
+      probeSingleNetwork(config.monitored[i].ssid, config.monitored[i].pass);
+    }
+  }
+
+  // Hourly heartbeat check
+  if (ntpSynchronized) {
+    time_t now = ntpBaseEpoch + (millis() - ntpBaseMillis) / 1000;
+    struct tm* ptm = gmtime(&now);
+    if (ptm && ptm->tm_hour != lastHeartbeatHour) {
+      sendHourlyHeartbeat(vbat, now);
+      lastHeartbeatHour = ptm->tm_hour;
+    }
+  }
+
   digitalWrite(PIN_LED, LOW);
 }
 
@@ -809,6 +872,7 @@ bool postSpoolToWorker(const char* ssid, const char* pass) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.printf("[Upload] Wi-Fi connection to '%s' failed\n", ssid);
     f.close();
+    WiFi.disconnect(true);
     return false;
   }
 
@@ -817,9 +881,16 @@ bool postSpoolToWorker(const char* ssid, const char* pass) {
   // Build batch payload
   JsonDocument doc;
   doc["station_id"]   = config.station_id;
-  doc["firmware"]     = "0.5.0";
+  doc["station_name"] = config.station_id;
+  doc["location"]     = config.location;
+  doc["firmware"]     = "0.5.1";
   doc["battery_mv"]   = (int)(readBatteryVoltage() * 1000.0f);
   doc["battery_pct"]  = batteryPercent(readBatteryVoltage());
+
+  // Count visible networks during scan
+  int visible = WiFi.scanNetworks(false, true);
+  WiFi.scanDelete();
+  doc["visible_networks"] = visible > 0 ? visible : 0;
 
   JsonArray netArr = doc["monitored_networks"].to<JsonArray>();
   for (int i = 0; i < config.monitored_count; i++) {
@@ -879,7 +950,7 @@ bool postSpoolToWorker(const char* ssid, const char* pass) {
   String auth = String("Bearer ") + config.auth_token;
   http.addHeader("Authorization", auth);
 
-  Serial.printf("[Upload] Posting %d records to %s ...\n", recs.size(), config.worker_url);
+  Serial.printf("[Upload] Posting %d records to %s via '%s'...\n", recs.size(), config.worker_url, ssid);
   int code = http.POST(payload);
   String responseBody = "";
   if (code > 0) {
@@ -910,6 +981,28 @@ bool postSpoolToWorker(const char* ssid, const char* pass) {
   }
 
   Serial.println("[Upload] Ingestion was not confirmed. Records remain marked pending in flash.");
+  return false;
+}
+
+// Connects through monitored networks, falling back to backup network if needed
+bool uploadSpoolWithFallback() {
+  bool ok = false;
+  // 1. Try each monitored network in order
+  for (int i = 0; i < config.monitored_count; i++) {
+    if (strlen(config.monitored[i].ssid) > 0) {
+      Serial.printf("[Upload] Attempting upload via monitored network '%s'...\n", config.monitored[i].ssid);
+      ok = postSpoolToWorker(config.monitored[i].ssid, config.monitored[i].pass);
+      if (ok) return true;
+    }
+  }
+
+  // 2. If login to monitored networks failed or if they lack internet access, try Fallback Network
+  if (config.fallback_enabled && strlen(config.fallback_ssid) > 0) {
+    Serial.printf("[Upload] Monitored networks failed / no internet. Using fallback network '%s'...\n", config.fallback_ssid);
+    ok = postSpoolToWorker(config.fallback_ssid, config.fallback_pass);
+    if (ok) return true;
+  }
+
   return false;
 }
 
@@ -985,11 +1078,7 @@ void checkUnsubmittedData() {
 
   if (hasUnsubmittedOldData()) {
     Serial.println("[Spool] Old collected data has not been submitted! Triggering immediate upload...");
-    bool ok = postSpoolToWorker(config.monitored_ssid, config.monitored_pass);
-    if (!ok && strlen(config.fallback_ssid) > 0) {
-      Serial.println("[Spool] Primary network failed, attempting Fallback Network for old data...");
-      ok = postSpoolToWorker(config.fallback_ssid, config.fallback_pass);
-    }
+    bool ok = uploadSpoolWithFallback();
     if (ok) {
       Serial.println("[Spool] Old data successfully submitted and marked in flash.");
     } else {
@@ -1010,11 +1099,7 @@ void checkDailyUpload() {
   // Upload window: 19:00 to 21:00 UTC (02:00 to 04:00 Vietnam time)
   if (hourUTC >= 19 && hourUTC <= 21 && spoolState.last_upload_day != currentDay) {
     Serial.println("[Upload] Triggering daily batch upload...");
-    bool ok = postSpoolToWorker(config.monitored_ssid, config.monitored_pass);
-    if (!ok && strlen(config.fallback_ssid) > 0) {
-      Serial.println("[Upload] Primary failed, attempting Fallback Network...");
-      ok = postSpoolToWorker(config.fallback_ssid, config.fallback_pass);
-    }
+    bool ok = uploadSpoolWithFallback();
     if (ok) {
       Serial.println("[Upload] Daily batch upload confirmed and recorded.");
     }
@@ -1024,14 +1109,10 @@ void checkDailyUpload() {
 void checkInitialUpload() {
   if (spoolState.initial_submitted) return;
 
-  Serial.println("[Startup] Initial setup upload pending. Attempting submission to GitHub...");
-  bool ok = postSpoolToWorker(config.monitored_ssid, config.monitored_pass);
-  if (!ok && strlen(config.fallback_ssid) > 0) {
-    Serial.println("[Startup] Primary failed, attempting Fallback Network for initial submission...");
-    ok = postSpoolToWorker(config.fallback_ssid, config.fallback_pass);
-  }
+  Serial.println("[Startup] Initial setup upload pending. Attempting first assessment submission to GitHub...");
+  bool ok = uploadSpoolWithFallback();
   if (ok) {
-    Serial.println("[Startup] Initial submission confirmed! Station registered on GitHub.");
+    Serial.println("[Startup] Initial assessment confirmed! Station registered on GitHub immediately.");
   } else {
     Serial.println("[Startup] Initial submission not yet completed. Will retry on next probe cycle.");
   }

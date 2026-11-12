@@ -68,6 +68,16 @@ This roadmap tracks the development of the T18 Network Reliability Monitor acros
 
 ---
 
+## Phase 4.1: Bug Fixes, Fallback Network & Immediate Station Registration (v0.5.1)
+- [x] Fixed compiler syntax error at lines 422–424 in `firmware/T18_wifiquality/T18_wifiquality.ino`.
+- [x] Added configurable Location field to ESP32 Soft-AP configuration portal and persistent LittleFS storage.
+- [x] Reintroduced configurable Fallback Network ("S24") with active/inactive toggle switch (backup upload only, never monitored).
+- [x] Firmware conducts first assessment of all configured monitored networks upon startup/setup and submits immediately to GitHub.
+- [x] Cloudflare Worker updates station location, monitored networks, and visible network count in `data/stations.json` atomically.
+- [x] GitHub Pages dashboard immediately reflects new stations and updated network telemetry with cache-busting and live worker synchronization.
+
+---
+
 ## Phase 5: Multi-Station Deployment & Field Hardening (v1.0.0)
 - [ ] Multi-network round-robin probing per cycle.
 - [ ] Low-battery safety lock (prevent brownout flash corruption when $< 3.1\text{V}$).

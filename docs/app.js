@@ -48,15 +48,18 @@ let currentSurveyDay = null;
  * Fetch helper with fallback to relative or parent path
  */
 async function fetchJsonWithFallback(path) {
+  const cb = `_cb=${Date.now()}`;
+  const addCb = (p) => (p.includes('?') ? `${p}&${cb}` : `${p}?${cb}`);
+
   try {
-    const res = await fetch(path);
+    const res = await fetch(addCb(path), { cache: 'no-store' });
     if (res.ok) return await res.json();
   } catch (e) {
     // try alternative path
   }
 
   const alternativePath = path.startsWith('../') ? path.replace('../', './') : `../${path}`;
-  const res2 = await fetch(alternativePath);
+  const res2 = await fetch(addCb(alternativePath), { cache: 'no-store' });
   if (!res2.ok) throw new Error(`Failed to load ${path}`);
   return await res2.json();
 }
@@ -80,37 +83,81 @@ async function loadVersion() {
 }
 
 /**
- * Load stations registry
+ * Load stations registry and merge live updates immediately
  */
 async function loadStations() {
   try {
     stations = await fetchJsonWithFallback('../data/stations.json');
-    stationSelect.innerHTML = '';
-
-    stations.forEach((st) => {
-      const opt = document.createElement('option');
-      opt.value = st.id;
-      opt.textContent = `${st.name || st.id} (${st.id})`;
-      stationSelect.appendChild(opt);
-    });
-
-    if (stations.length > 0) {
-      selectStation(stations[0].id);
-    }
   } catch (err) {
-    console.warn('Could not load stations.json directly, falling back to mock view', err);
-    stationSelect.innerHTML = '<option value="C-703">Room C-703 (Sample)</option>';
+    console.warn('Could not load stations.json directly, falling back to sample view', err);
     stations = [{
-      id: "C-703",
-      name: "Room C-703",
-      location: "Building C, Room 703",
+      id: "C-103",
+      name: "Room C-103",
+      location: "Science Building C, Room 103",
+      monitored_networks: ["School-Guest"],
       monitored_network: "School-Guest",
       fallback_network: "S24",
-      battery_mv: 3980,
-      battery_pct: 82,
+      battery_mv: 4147,
+      battery_pct: 95,
       last_seen: new Date().toISOString()
     }];
-    selectStation("C-703");
+  }
+
+  // Also query live endpoint from Cloudflare Worker to show newly registered stations and fresh telemetry immediately
+  try {
+    const liveRes = await fetch('https://t18-telemetry-worker.kreier.workers.dev/live', { cache: 'no-store' });
+    if (liveRes.ok) {
+      const liveData = await liveRes.json();
+      if (liveData && typeof liveData === 'object') {
+        Object.values(liveData).forEach((liveSt) => {
+          if (!liveSt || !liveSt.station_id) return;
+          const existing = stations.find(s => s.id === liveSt.station_id);
+          if (existing) {
+            if (liveSt.battery_mv) existing.battery_mv = liveSt.battery_mv;
+            if (liveSt.battery_pct) existing.battery_pct = liveSt.battery_pct;
+            if (typeof liveSt.visible_networks === 'number') existing.visible_networks = liveSt.visible_networks;
+            if (liveSt.status) existing.status = liveSt.status;
+            if (liveSt.timestamp) existing.last_seen = new Date(liveSt.timestamp * 1000).toISOString();
+            if (liveSt.location) existing.location = liveSt.location;
+            if (liveSt.monitored_networks && liveSt.monitored_networks.length > 0) {
+              existing.monitored_networks = liveSt.monitored_networks;
+              existing.monitored_network = liveSt.monitored_networks[0];
+            }
+          } else {
+            // New station not yet committed in stations.json — show immediately
+            stations.push({
+              id: liveSt.station_id,
+              name: liveSt.station_name || liveSt.station_id,
+              location: liveSt.location || 'Science Building C',
+              monitored_networks: liveSt.monitored_networks || ['Default'],
+              monitored_network: (liveSt.monitored_networks && liveSt.monitored_networks[0]) || 'Default',
+              battery_mv: liveSt.battery_mv || 0,
+              battery_pct: liveSt.battery_pct || 0,
+              visible_networks: liveSt.visible_networks || 0,
+              status: liveSt.status || 'online',
+              first_seen: new Date().toISOString(),
+              last_seen: liveSt.timestamp ? new Date(liveSt.timestamp * 1000).toISOString() : new Date().toISOString(),
+            });
+          }
+        });
+      }
+    }
+  } catch (liveErr) {
+    console.info('Live worker endpoint not reachable or skipped:', liveErr);
+  }
+
+  stationSelect.innerHTML = '';
+  stations.forEach((st) => {
+    const opt = document.createElement('option');
+    opt.value = st.id;
+    opt.textContent = `${st.name || st.id} (${st.id})`;
+    stationSelect.appendChild(opt);
+  });
+
+  if (stations.length > 0) {
+    const activeId = currentStation ? currentStation.id : stations[0].id;
+    const exists = stations.some(s => s.id === activeId);
+    selectStation(exists ? activeId : stations[0].id);
   }
 }
 

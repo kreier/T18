@@ -52,6 +52,10 @@ interface HeartbeatPayload {
 
 interface IngestPayload {
   station_id: string;
+  station_name?: string;
+  location?: string;
+  monitored_networks?: string[];
+  visible_networks?: number;
   firmware?: string;
   battery_mv?: number;
   battery_pct?: number;
@@ -93,7 +97,7 @@ export default {
 
     // Health check
     if (request.method === 'GET' && url.pathname === '/') {
-      return new Response(JSON.stringify({ service: 'T18 Telemetry Gateway', status: 'healthy', version: '0.5.0' }), {
+      return new Response(JSON.stringify({ service: 'T18 Telemetry Gateway', status: 'healthy', version: '0.5.1' }), {
         headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       });
     }
@@ -314,6 +318,25 @@ export default {
         // Update data/stations.json metadata in GitHub
         await updateStationsRegistry(env, payload);
 
+        // Update live status cache in KV
+        if (env.TELEMETRY_KV) {
+          try {
+            await env.TELEMETRY_KV.put(`live:${payload.station_id}`, JSON.stringify({
+              station_id: payload.station_id,
+              station_name: payload.station_name || payload.station_id,
+              location: payload.location,
+              monitored_networks: payload.monitored_networks,
+              timestamp: Math.floor(Date.now() / 1000),
+              battery_mv: payload.battery_mv || 0,
+              battery_pct: payload.battery_pct || 0,
+              visible_networks: payload.visible_networks || 0,
+              status: 'green',
+            }), { expirationTtl: 172800 });
+          } catch (kvErr) {
+            console.warn('Failed to update live KV in ingest', kvErr);
+          }
+        }
+
         return new Response(JSON.stringify({
           success: true,
           station_id: payload.station_id,
@@ -399,20 +422,35 @@ async function updateStationsRegistry(env: Env, payload: IngestPayload): Promise
         list[idx].last_seen = now;
         if (payload.battery_mv) list[idx].battery_mv = payload.battery_mv;
         if (payload.battery_pct) list[idx].battery_pct = payload.battery_pct;
-        if ((payload as any).monitored_networks) list[idx].monitored_networks = (payload as any).monitored_networks;
+        if (payload.monitored_networks && payload.monitored_networks.length > 0) {
+          list[idx].monitored_networks = payload.monitored_networks;
+          list[idx].monitored_network = payload.monitored_networks[0];
+        }
+        if (payload.location && payload.location.trim().length > 0) {
+          list[idx].location = payload.location.trim();
+        }
+        if (payload.station_name && payload.station_name.trim().length > 0) {
+          list[idx].name = payload.station_name.trim();
+        }
+        if (typeof payload.visible_networks === 'number') {
+          list[idx].visible_networks = payload.visible_networks;
+        }
         list[idx].status = 'online';
       } else {
-        const nets = (payload as any).monitored_networks || [payload.records[0]?.ssid || 'Unknown'];
+        const nets = (payload.monitored_networks && payload.monitored_networks.length > 0)
+          ? payload.monitored_networks
+          : [payload.records[0]?.ssid || 'Unknown'];
         list.push({
           id: payload.station_id,
-          name: payload.station_id,
-          location: 'Auto-registered Station',
+          name: payload.station_name || payload.station_id,
+          location: (payload.location && payload.location.trim().length > 0) ? payload.location.trim() : 'Science Building C',
           monitored_networks: nets,
           monitored_network: nets[0] || 'Unknown',
           first_seen: now,
           last_seen: now,
           battery_mv: payload.battery_mv || 0,
           battery_pct: payload.battery_pct || 0,
+          visible_networks: typeof payload.visible_networks === 'number' ? payload.visible_networks : 0,
           status: 'online',
         });
       }

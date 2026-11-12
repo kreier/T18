@@ -94,9 +94,10 @@ Because the ESP32 utilizes **Light Sleep (`esp_light_sleep_start()`)**:
    - The station remains in AP mode indefinitely, allowing the user to configure settings without being disconnected.
    - If 60 seconds elapse with 0 connected clients, the AP is shut down and normal operation begins immediately.
 3. **Web Portal Configuration Parameters**:
-   - **Station Name**: String ID (e.g., `C-703`).
-   - **Monitored Networks**: Ordered list of WPA2/WPA3 Personal SSIDs & passwords.
-   - **Fallback Network**: SSID & password (default: `S24` / `12345678`) used when monitored networks fail or for daily sync.
+   - **Station ID**: String ID (e.g., `C-103`).
+   - **Location**: Human-readable location description (e.g., `Science Building C, Room 103`).
+   - **Monitored Networks**: Ordered list of up to 4 SSIDs & passwords sequentially benchmarked.
+   - **Fallback Network**: Configurable SSID & password (default: `S24` / `12345678`) with enable/disable switch (used strictly as backup when monitored networks fail or lack internet connectivity; never monitored).
    - **Measurement Interval**: Minutes between wakeups (default: 10 minutes).
    - **Ingestion Worker URL & Bearer Token**: Cloudflare Worker endpoint and PSK.
    - **Save & Reboot Button**: Saves configuration to LittleFS `/config.json` and invokes `ESP.restart()`.
