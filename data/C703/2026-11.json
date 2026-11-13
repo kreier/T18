@@ -1,0 +1,16 @@
+{
+  "station": "C703",
+  "month": "2026-11",
+  "hours": {
+    "2026-11-13T01:00:00Z": {
+      "samples": 1,
+      "successful": 1,
+      "avg_assoc_ms": 6958,
+      "avg_dhcp_ms": 0,
+      "avg_http_latency_ms": 1923,
+      "status": "orange",
+      "avg_rssi": -79,
+      "avg_battery_mv": 4058
+    }
+  }
+}
