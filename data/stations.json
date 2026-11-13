@@ -51,5 +51,20 @@
     "battery_pct": 88,
     "visible_networks": 22,
     "status": "online"
+  },
+  {
+    "id": "C703",
+    "name": "C703",
+    "location": "HCMUE Building C",
+    "monitored_networks": [
+      "HCMUE-WIFI 2.4G"
+    ],
+    "monitored_network": "HCMUE-WIFI 2.4G",
+    "first_seen": "2026-11-13T01:58:04.600Z",
+    "last_seen": "2026-11-13T01:58:04.600Z",
+    "battery_mv": 4040,
+    "battery_pct": 88,
+    "visible_networks": 9,
+    "status": "online"
   }
 ]
