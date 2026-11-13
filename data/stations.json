@@ -66,5 +66,22 @@
     "battery_pct": 88,
     "visible_networks": 9,
     "status": "online"
+  },
+  {
+    "id": "C616",
+    "name": "C616",
+    "location": "HCMUE Building C",
+    "monitored_networks": [
+      "DHSP-WIFI",
+      "HCMUE-C617",
+      "HCMUE-C616"
+    ],
+    "monitored_network": "DHSP-WIFI",
+    "first_seen": "2026-11-13T05:16:56.669Z",
+    "last_seen": "2026-11-13T05:16:56.669Z",
+    "battery_mv": 4194,
+    "battery_pct": 100,
+    "visible_networks": 22,
+    "status": "online"
   }
 ]
