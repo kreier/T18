@@ -105,10 +105,26 @@ export default {
       return new Response(null, { headers: CORS_HEADERS });
     }
 
-    // Health check
+    // Health check and root overview
     if (request.method === 'GET' && url.pathname === '/') {
-      return new Response(JSON.stringify({ service: 'T18 Telemetry Gateway', status: 'healthy', version: '0.5.1' }), {
-        headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+      const format = url.searchParams.get('format');
+      const accept = request.headers.get('Accept') || '';
+
+      // Return raw JSON if explicitly requested by API clients / health probes
+      if (format === 'json' || (accept.includes('application/json') && !accept.includes('text/html'))) {
+        return new Response(JSON.stringify({ service: 'T18 Telemetry Gateway', status: 'healthy', version: '0.5.1' }), {
+          headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        });
+      }
+
+      // Otherwise render modern responsive HTML overview portal
+      const html = await renderOverviewHtml(env);
+      return new Response(html, {
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          ...CORS_HEADERS,
+        },
       });
     }
 
@@ -602,4 +618,595 @@ async function updateNetworksSurvey(env: Env, payload: IngestPayload): Promise<v
     },
     `telemetry: update ${payload.station_id} visible networks survey for ${today}`
   );
+}
+
+// ---------------------------------------------------------------------------
+// HTML Portal & Station Overview Rendering
+// ---------------------------------------------------------------------------
+
+interface RegisteredStationMeta {
+  id: string;
+  name?: string;
+  location?: string;
+  monitored_networks?: string[];
+  monitored_network?: string;
+  fallback_network?: string;
+  probe_interval_min?: number;
+  first_seen?: string;
+  last_seen?: string;
+  battery_mv?: number;
+  battery_pct?: number;
+  visible_networks?: number;
+  status?: string;
+}
+
+function escapeHtml(str: any): string {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatRelativeTime(secondsAgo: number): string {
+  if (secondsAgo < 0 || isNaN(secondsAgo)) return 'just now';
+  if (secondsAgo < 60) return `${Math.floor(secondsAgo)}s ago`;
+  const mins = Math.floor(secondsAgo / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+async function renderOverviewHtml(env: Env): Promise<string> {
+  const now = new Date();
+  const nowEpoch = Math.floor(now.getTime() / 1000);
+
+  // 1. Fetch live stations from Cloudflare KV (if available)
+  const liveMap = new Map<string, any>();
+  if (env.TELEMETRY_KV) {
+    try {
+      const list = await env.TELEMETRY_KV.list({ prefix: 'live:' });
+      for (const key of list.keys) {
+        const val = await env.TELEMETRY_KV.get(key.name, { type: 'json' });
+        if (val) {
+          const stId = key.name.replace('live:', '');
+          liveMap.set(stId, val);
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to query live KV entries', e);
+    }
+  }
+
+  // 2. Fetch stations.json from GitHub repository
+  let githubStations: RegisteredStationMeta[] = [];
+  try {
+    const ghUrl = `https://raw.githubusercontent.com/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/${env.GITHUB_BRANCH}/data/stations.json`;
+    const res = await fetch(ghUrl, {
+      headers: {
+        'User-Agent': 'T18-Telemetry-Gateway',
+        ...(env.GITHUB_TOKEN ? { 'Authorization': `Bearer ${env.GITHUB_TOKEN}` } : {}),
+      },
+    });
+    if (res.ok) {
+      githubStations = await res.json();
+    }
+  } catch (e) {
+    console.warn('Failed to fetch stations.json from GitHub', e);
+  }
+
+  // 3. Merge GitHub metadata and Live KV records
+  const stationMap = new Map<string, {
+    id: string;
+    name: string;
+    location: string;
+    monitored_networks: string[];
+    fallback_network?: string;
+    battery_mv?: number;
+    battery_pct?: number;
+    visible_networks?: number;
+    rssi?: number;
+    last_epoch: number;
+    last_seen_formatted: string;
+    age_seconds: number;
+    status: 'online' | 'idle' | 'offline';
+  }>();
+
+  for (const gh of githubStations) {
+    if (!gh.id) continue;
+    const epoch = gh.last_seen ? Math.floor(new Date(gh.last_seen).getTime() / 1000) : 0;
+    const networks = gh.monitored_networks || (gh.monitored_network ? [gh.monitored_network] : []);
+    const age = epoch > 0 ? (nowEpoch - epoch) : 999999999;
+
+    let status: 'online' | 'idle' | 'offline' = 'offline';
+    if (age <= 7200) status = 'online';
+    else if (age <= 86400) status = 'idle';
+
+    stationMap.set(gh.id, {
+      id: gh.id,
+      name: gh.name || gh.id,
+      location: gh.location || 'Unknown',
+      monitored_networks: networks,
+      fallback_network: gh.fallback_network,
+      battery_mv: gh.battery_mv,
+      battery_pct: gh.battery_pct,
+      visible_networks: gh.visible_networks,
+      rssi: undefined,
+      last_epoch: epoch,
+      last_seen_formatted: gh.last_seen || 'Never',
+      age_seconds: age,
+      status,
+    });
+  }
+
+  for (const [stId, live] of liveMap.entries()) {
+    const existing = stationMap.get(stId);
+    const liveEpoch = typeof live.timestamp === 'number' ? live.timestamp : nowEpoch;
+    const age = nowEpoch - liveEpoch;
+
+    let status: 'online' | 'idle' | 'offline' = 'offline';
+    if (age <= 7200) status = 'online';
+    else if (age <= 86400) status = 'idle';
+
+    const mergedNetworks = (live.monitored_networks && live.monitored_networks.length > 0)
+      ? live.monitored_networks
+      : (existing?.monitored_networks || []);
+
+    stationMap.set(stId, {
+      id: stId,
+      name: live.station_name || existing?.name || stId,
+      location: live.location || existing?.location || 'Unknown',
+      monitored_networks: mergedNetworks,
+      fallback_network: existing?.fallback_network,
+      battery_mv: live.battery_mv || existing?.battery_mv,
+      battery_pct: live.battery_pct !== undefined ? live.battery_pct : existing?.battery_pct,
+      visible_networks: live.visible_networks !== undefined ? live.visible_networks : existing?.visible_networks,
+      rssi: live.rssi,
+      last_epoch: Math.max(liveEpoch, existing?.last_epoch || 0),
+      last_seen_formatted: new Date(liveEpoch * 1000).toISOString(),
+      age_seconds: Math.min(age, existing?.age_seconds !== undefined ? existing.age_seconds : age),
+      status,
+    });
+  }
+
+  const stations = Array.from(stationMap.values()).sort((a, b) => {
+    if (a.status === 'online' && b.status !== 'online') return -1;
+    if (b.status === 'online' && a.status !== 'online') return 1;
+    return b.last_epoch - a.last_epoch;
+  });
+
+  const totalStations = stations.length;
+  const onlineStations = stations.filter(s => s.status === 'online').length;
+  const avgBatteryPct = stations.filter(s => s.battery_pct !== undefined).length > 0
+    ? Math.round(stations.filter(s => s.battery_pct !== undefined).reduce((acc, s) => acc + (s.battery_pct || 0), 0) / stations.filter(s => s.battery_pct !== undefined).length)
+    : 100;
+  const totalMonitoredNetworks = new Set(stations.flatMap(s => s.monitored_networks)).size;
+
+  const rowsHtml = stations.map(s => {
+    const relTime = formatRelativeTime(s.age_seconds);
+    const badgeClass = s.status === 'online' ? 'badge-healthy' : (s.status === 'idle' ? 'badge-idle' : 'badge-offline');
+    const badgeLabel = s.status === 'online' ? '<span class="pulse-dot"></span> Online' : (s.status === 'idle' ? 'Idle' : 'Offline');
+
+    const netPills = s.monitored_networks.map(n => `<span class="wifi-pill">${escapeHtml(n)}</span>`).join('');
+    const fallbackPill = s.fallback_network ? `<span class="wifi-pill wifi-fallback" title="Fallback network (backup uplink only)">${escapeHtml(s.fallback_network)} (backup)</span>` : '';
+
+    const battPct = s.battery_pct !== undefined ? s.battery_pct : (s.battery_mv ? Math.min(100, Math.max(0, Math.round((s.battery_mv - 3300) / (4200 - 3300) * 100))) : 0);
+    const battVolts = s.battery_mv ? (s.battery_mv / 1000).toFixed(2) + ' V' : '--';
+    const battColor = battPct >= 60 ? '#10b981' : (battPct >= 25 ? '#f59e0b' : '#ef4444');
+
+    const rssiHtml = s.rssi !== undefined
+      ? `<span style="font-family: var(--font-mono); font-weight: 600;">${s.rssi}</span> <span style="color: var(--text-muted); font-size: 11px;">dBm</span>`
+      : '<span style="color: var(--text-muted);">--</span>';
+
+    const visibleCount = s.visible_networks !== undefined
+      ? `<span style="font-family: var(--font-mono); font-weight: 600;">${s.visible_networks}</span> <span style="color: var(--text-muted); font-size: 11px;">SSIDs</span>`
+      : '<span style="color: var(--text-muted);">--</span>';
+
+    return `
+      <tr>
+        <td>
+          <div class="station-id">${escapeHtml(s.id)}</div>
+          <div class="station-name">${escapeHtml(s.name !== s.id ? s.name : s.location)}</div>
+        </td>
+        <td>
+          <div class="location-box">
+            <svg class="icon-svg" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clip-rule="evenodd"/></svg>
+            <span>${escapeHtml(s.location)}</span>
+          </div>
+        </td>
+        <td>
+          <span class="badge ${badgeClass}">${badgeLabel}</span>
+        </td>
+        <td>
+          <div class="pills-container">
+            ${netPills}
+            ${fallbackPill}
+          </div>
+        </td>
+        <td>
+          <div class="battery-wrap">
+            <div class="battery-bar-bg">
+              <div class="battery-bar-fill" style="width: ${battPct}%; background-color: ${battColor};"></div>
+            </div>
+            <div class="battery-text">${battPct}% · ${battVolts}</div>
+          </div>
+        </td>
+        <td>${visibleCount}</td>
+        <td>${rssiHtml}</td>
+        <td>
+          <div class="timestamp-box">
+            <div class="timestamp-rel">${relTime}</div>
+            <div class="timestamp-full" title="${escapeHtml(s.last_seen_formatted)}">${s.last_epoch > 0 ? new Date(s.last_epoch * 1000).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : 'Never'}</div>
+          </div>
+        </td>
+        <td style="text-align: right;">
+          <a href="/live?station=${encodeURIComponent(s.id)}" class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px; font-family: var(--font-mono);" target="_blank">Live JSON ↗</a>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="60">
+  <title>T18 Telemetry Gateway · Healthy (v0.5.1)</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22%233b82f6%22><path d=%22M12 3C6.95 3 2.56 5.6 0 9.53l2.45 2.45C4.38 8.65 7.94 6.5 12 6.5s7.62 2.15 9.55 5.48L24 9.53C21.44 5.6 17.05 3 12 3zm0 7c-3.1 0-5.83 1.4-7.66 3.61l2.46 2.46c1.27-1.58 3.14-2.57 5.2-2.57s3.93.99 5.2 2.57l2.46-2.46C17.83 11.4 15.1 10 12 10zm0 7c-1.38 0-2.5 1.12-2.5 2.5S10.62 22 12 22s2.5-1.12 2.5-2.5S13.38 17 12 17z%22/></svg>">
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: #111827;
+      --card-border: #1f293d;
+      --card-hover: #1a2333;
+      --text-main: #f9fafb;
+      --text-muted: #94a3b8;
+      --accent: #3b82f6;
+      --accent-glow: rgba(59, 130, 246, 0.25);
+      --green: #10b981;
+      --green-bg: rgba(16, 185, 129, 0.12);
+      --green-border: rgba(16, 185, 129, 0.3);
+      --orange: #f59e0b;
+      --orange-bg: rgba(245, 158, 11, 0.12);
+      --orange-border: rgba(245, 158, 11, 0.3);
+      --red: #ef4444;
+      --red-bg: rgba(239, 68, 68, 0.12);
+      --red-border: rgba(239, 68, 68, 0.3);
+      --gray: #64748b;
+      --gray-bg: rgba(100, 116, 139, 0.12);
+      --gray-border: rgba(100, 116, 139, 0.3);
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      line-height: 1.5;
+      padding: 24px 20px 48px;
+      -webkit-font-smoothing: antialiased;
+    }
+    .container { max-width: 1240px; margin: 0 auto; }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--card-border);
+      margin-bottom: 28px;
+    }
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .brand-icon {
+      width: 44px;
+      height: 44px;
+      background: linear-gradient(135deg, #1e3a8a, #3b82f6);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 14px var(--accent-glow);
+    }
+    .brand-icon svg { width: 24px; height: 24px; fill: white; }
+    .brand-title {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .brand-sub { font-size: 13px; color: var(--text-muted); }
+    .header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.15s ease;
+      cursor: pointer;
+    }
+    .btn-primary { background: #2563eb; color: white; border: 1px solid #3b82f6; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-secondary { background: #1e293b; color: #cbd5e1; border: 1px solid #334155; }
+    .btn-secondary:hover { background: #334155; color: white; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      letter-spacing: 0.02em;
+    }
+    .badge-healthy { background: var(--green-bg); color: #34d399; border: 1px solid var(--green-border); }
+    .badge-version { background: rgba(59, 130, 246, 0.12); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+    .badge-idle { background: var(--orange-bg); color: #fbbf24; border: 1px solid var(--orange-border); }
+    .badge-offline { background: var(--gray-bg); color: #94a3b8; border: 1px solid var(--gray-border); }
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 8px #10b981;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+    .stat-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .stat-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .stat-value {
+      font-size: 26px;
+      font-weight: 700;
+      color: var(--text-main);
+      font-family: var(--font-mono);
+      letter-spacing: -0.03em;
+    }
+    .stat-desc { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      margin-bottom: 16px;
+      gap: 12px;
+    }
+    .section-title { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
+    .section-subtitle { font-size: 13px; color: var(--text-muted); }
+    .table-container {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      overflow-x: auto;
+      margin-bottom: 36px;
+    }
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
+    th {
+      background: rgba(15, 23, 42, 0.7);
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--card-border);
+      white-space: nowrap;
+    }
+    td { padding: 16px 18px; border-bottom: 1px solid var(--card-border); vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--card-hover); }
+    .station-id { font-family: var(--font-mono); font-weight: 700; font-size: 14px; color: #60a5fa; }
+    .station-name { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+    .location-box { display: flex; align-items: center; gap: 6px; color: #cbd5e1; font-size: 12px; }
+    .icon-svg { width: 13px; height: 13px; fill: #94a3b8; flex-shrink: 0; }
+    .pills-container { max-width: 280px; }
+    .wifi-pill {
+      display: inline-block;
+      padding: 3px 8px;
+      margin: 2px 4px 2px 0;
+      border-radius: 6px;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #e2e8f0;
+      white-space: nowrap;
+    }
+    .wifi-fallback {
+      background: rgba(245, 158, 11, 0.1);
+      border-color: rgba(245, 158, 11, 0.25);
+      color: #fbbf24;
+    }
+    .battery-wrap { display: flex; flex-direction: column; gap: 4px; min-width: 100px; }
+    .battery-bar-bg { width: 100%; height: 6px; background: rgba(255, 255, 255, 0.1); border-radius: 3px; overflow: hidden; }
+    .battery-bar-fill { height: 100%; border-radius: 3px; }
+    .battery-text { font-size: 11px; font-family: var(--font-mono); color: var(--text-muted); }
+    .timestamp-box { white-space: nowrap; }
+    .timestamp-rel { font-weight: 600; color: var(--text-main); }
+    .timestamp-full { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+    .docs-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 32px;
+    }
+    .endpoint-item {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      font-size: 13px;
+    }
+    .endpoint-item:last-child { border-bottom: none; }
+    .method-badge {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      min-width: 48px;
+      text-align: center;
+    }
+    .method-get { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
+    .method-post { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+    .endpoint-path { font-family: var(--font-mono); color: #f1f5f9; font-weight: 600; min-width: 140px; }
+    .endpoint-desc { color: var(--text-muted); }
+    footer {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding-top: 24px;
+      border-top: 1px solid var(--card-border);
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .footer-link { color: #60a5fa; text-decoration: none; }
+    .footer-link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24"><path d="M12 3C6.95 3 2.56 5.6 0 9.53l2.45 2.45C4.38 8.65 7.94 6.5 12 6.5s7.62 2.15 9.55 5.48L24 9.53C21.44 5.6 17.05 3 12 3zm0 7c-3.1 0-5.83 1.4-7.66 3.61l2.46 2.46c1.27-1.58 3.14-2.57 5.2-2.57s3.93.99 5.2 2.57l2.46-2.46C17.83 11.4 15.1 10 12 10zm0 7c-1.38 0-2.5 1.12-2.5 2.5S10.62 22 12 22s2.5-1.12 2.5-2.5S13.38 17 12 17z"/></svg>
+        </div>
+        <div>
+          <div class="brand-title">
+            <span>T18 Telemetry Gateway</span>
+            <span class="badge badge-healthy"><span class="pulse-dot"></span> Healthy</span>
+            <span class="badge badge-version">v0.5.1</span>
+          </div>
+          <div class="brand-sub">Cloudflare Edge Ingestion &amp; Real-time Monitoring Node</div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <a href="https://kreier.github.io/T18" target="_blank" class="btn btn-primary">Web Dashboard ↗</a>
+        <a href="https://github.com/kreier/T18" target="_blank" class="btn btn-secondary">GitHub ↗</a>
+        <a href="/?format=json" class="btn btn-secondary" style="font-family: var(--font-mono);">JSON API</a>
+      </div>
+    </header>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Registered Stations</div>
+        <div class="stat-value">${totalStations}</div>
+        <div class="stat-desc">Provisioned ESP32 probes</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Active Online Stations</div>
+        <div class="stat-value" style="color: #34d399;">${onlineStations}</div>
+        <div class="stat-desc">Reported within last 2 hours</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Monitored Networks</div>
+        <div class="stat-value" style="color: #60a5fa;">${totalMonitoredNetworks}</div>
+        <div class="stat-desc">Target Wi-Fi SSIDs monitored</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Average Battery</div>
+        <div class="stat-value" style="color: ${avgBatteryPct >= 50 ? '#34d399' : '#f59e0b'};">${avgBatteryPct}%</div>
+        <div class="stat-desc">Fleet power health status</div>
+      </div>
+    </div>
+
+    <div class="section-header">
+      <div>
+        <div class="section-title">Registered IoT Stations</div>
+        <div class="section-subtitle">Real-time health, multi-network probing state, and battery telemetry</div>
+      </div>
+      <div style="font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);">
+        Auto-refreshes every 60s
+      </div>
+    </div>
+
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Station</th>
+            <th>Location</th>
+            <th>Status</th>
+            <th>Monitored Networks</th>
+            <th>Battery</th>
+            <th>Visible</th>
+            <th>Signal</th>
+            <th>Latest Submission</th>
+            <th style="text-align: right;">Endpoint</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rowsHtml || '<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 32px;">No stations currently registered.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="docs-card">
+      <div style="font-size: 15px; font-weight: 700; margin-bottom: 4px;">Gateway Endpoints Quick Reference</div>
+      <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">Core REST endpoints served by this edge gateway:</div>
+      <div class="endpoint-item">
+        <span class="method-badge method-get">GET</span>
+        <span class="endpoint-path">/</span>
+        <span class="endpoint-desc">This overview website (or raw JSON when requested via <code>?format=json</code> or <code>Accept: application/json</code>)</span>
+      </div>
+      <div class="endpoint-item">
+        <span class="method-badge method-get">GET</span>
+        <span class="endpoint-path">/live</span>
+        <span class="endpoint-desc">Live status for all stations cached in KV (or <code>/live?station=&lt;id&gt;</code> for single probe)</span>
+      </div>
+      <div class="endpoint-item">
+        <span class="method-badge method-post">POST</span>
+        <span class="endpoint-path">/heartbeat</span>
+        <span class="endpoint-desc">Hourly station heartbeat (voltage, visible networks count, RSSI, status)</span>
+      </div>
+      <div class="endpoint-item">
+        <span class="method-badge method-post">POST</span>
+        <span class="endpoint-path">/ingest</span>
+        <span class="endpoint-desc">Batch rollups submission, commits daily/monthly telemetry and networks survey directly to GitHub</span>
+      </div>
+    </div>
+
+    <footer>
+      <div>T18 Wi-Fi Quality Telemetry System · Open Source under MIT · Deployed via Cloudflare Workers</div>
+      <div>Edge Server UTC: <span style="font-family: var(--font-mono);">${escapeHtml(now.toISOString().replace('T', ' ').slice(0, 19))} UTC</span></div>
+    </footer>
+  </div>
+</body>
+</html>`;
 }
