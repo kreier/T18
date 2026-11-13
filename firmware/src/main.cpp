@@ -118,6 +118,54 @@ void checkDailyUpload();
 void checkInitialUpload();
 bool postSpoolToWorker(const char* ssid, const char* pass);
 bool uploadSpoolWithFallback();
+int  performVisibleNetworksScan();
+
+// ---------- Scanned Networks Survey Model & Helpers ----------
+
+struct ScannedNetwork {
+  char ssid[33] = "";
+  int rssi      = -99;
+  int channel   = 1;
+  char security[16] = "WPA2-PSK";
+};
+
+static const int MAX_SCANNED_NETWORKS = 64;
+static ScannedNetwork latestScanResults[MAX_SCANNED_NETWORKS];
+static int latestScanCount = 0;
+
+const char* getAuthModeName(wifi_auth_mode_t auth) {
+  switch (auth) {
+    case WIFI_AUTH_OPEN:            return "Open";
+    case WIFI_AUTH_WEP:             return "WEP";
+    case WIFI_AUTH_WPA_PSK:         return "WPA-PSK";
+    case WIFI_AUTH_WPA2_PSK:        return "WPA2-PSK";
+    case WIFI_AUTH_WPA_WPA2_PSK:    return "WPA/WPA2-PSK";
+    case WIFI_AUTH_WPA2_ENTERPRISE: return "WPA2-Enterprise";
+    case WIFI_AUTH_WPA3_PSK:        return "WPA3-PSK";
+    case WIFI_AUTH_WPA2_WPA3_PSK:   return "WPA2/WPA3-PSK";
+    default:                        return "WPA2-PSK";
+  }
+}
+
+int performVisibleNetworksScan() {
+  Serial.println("[Scan] Scanning visible Wi-Fi spectrum...");
+  int n = WiFi.scanNetworks(false, true);
+  if (n < 0) {
+    Serial.println("[Scan] Wi-Fi scan returned error");
+    return 0;
+  }
+
+  latestScanCount = (n > MAX_SCANNED_NETWORKS) ? MAX_SCANNED_NETWORKS : n;
+  for (int i = 0; i < latestScanCount; i++) {
+    strlcpy(latestScanResults[i].ssid, WiFi.SSID(i).c_str(), sizeof(latestScanResults[i].ssid));
+    latestScanResults[i].rssi = WiFi.RSSI(i);
+    latestScanResults[i].channel = WiFi.channel(i);
+    strlcpy(latestScanResults[i].security, getAuthModeName(WiFi.encryptionType(i)), sizeof(latestScanResults[i].security));
+  }
+  WiFi.scanDelete();
+  Serial.printf("[Scan] Detected %d visible networks (%d stored for spectrum survey)\n", n, latestScanCount);
+  return n;
+}
 
 // ---------- Helper Functions ----------
 
@@ -662,8 +710,7 @@ void probeSingleNetwork(const char* ssid, const char* pass) {
 
 // Send lightweight hourly heartbeat to Cloudflare Worker
 void sendHourlyHeartbeat(float vbat, time_t epochSec) {
-  int visible = WiFi.scanNetworks(false, true);
-  WiFi.scanDelete();
+  int visible = performVisibleNetworksScan();
 
   String hbUrl = config.worker_url;
   int idx = hbUrl.lastIndexOf('/');
@@ -888,10 +935,20 @@ bool postSpoolToWorker(const char* ssid, const char* pass) {
   doc["battery_mv"]   = (int)(readBatteryVoltage() * 1000.0f);
   doc["battery_pct"]  = batteryPercent(readBatteryVoltage());
 
-  // Count visible networks during scan
-  int visible = WiFi.scanNetworks(false, true);
-  WiFi.scanDelete();
-  doc["visible_networks"] = visible > 0 ? visible : 0;
+  // Perform Wi-Fi spectrum scan to populate visible networks survey
+  performVisibleNetworksScan();
+  doc["visible_networks"] = latestScanCount;
+
+  JsonArray scanArr = doc["scan_networks"].to<JsonArray>();
+  for (int i = 0; i < latestScanCount; i++) {
+    if (strlen(latestScanResults[i].ssid) > 0) {
+      JsonObject sObj = scanArr.add<JsonObject>();
+      sObj["ssid"] = latestScanResults[i].ssid;
+      sObj["rssi"] = latestScanResults[i].rssi;
+      sObj["ch"]   = latestScanResults[i].channel;
+      sObj["sec"]  = latestScanResults[i].security;
+    }
+  }
 
   JsonArray netArr = doc["monitored_networks"].to<JsonArray>();
   for (int i = 0; i < config.monitored_count; i++) {

@@ -50,12 +50,22 @@ interface HeartbeatPayload {
   last_http_latency_ms: number;
 }
 
+interface ScannedNetworkRecord {
+  ssid: string;
+  rssi: number;
+  ch?: number;
+  channel?: number;
+  sec?: string;
+  security?: string;
+}
+
 interface IngestPayload {
   station_id: string;
   station_name?: string;
   location?: string;
   monitored_networks?: string[];
   visible_networks?: number;
+  scan_networks?: ScannedNetworkRecord[];
   firmware?: string;
   battery_mv?: number;
   battery_pct?: number;
@@ -318,6 +328,15 @@ export default {
         // Update data/stations.json metadata in GitHub
         await updateStationsRegistry(env, payload);
 
+        // Update data/<station_id>/networks.json survey in GitHub if scan results are provided
+        if (payload.scan_networks && payload.scan_networks.length > 0) {
+          try {
+            await updateNetworksSurvey(env, payload);
+          } catch (surveyErr) {
+            console.error('Failed to update networks survey in GitHub', surveyErr);
+          }
+        }
+
         // Update live status cache in KV
         if (env.TELEMETRY_KV) {
           try {
@@ -457,5 +476,130 @@ async function updateStationsRegistry(env: Env, payload: IngestPayload): Promise
       return list;
     },
     `chore(registry): update station ${payload.station_id} heartbeat`
+  );
+}
+
+interface NetworkSurveyItem {
+  ssid: string;
+  is_monitored: boolean;
+  avg_rssi: number;
+  min_rssi: number;
+  max_rssi: number;
+  visibility_pct: number;
+  observed_scans: number;
+  total_scans: number;
+  channel: number;
+  security: string;
+  last_seen: string;
+}
+
+interface DailySurvey {
+  date: string;
+  total_scans: number;
+  networks_count: number;
+  networks: NetworkSurveyItem[];
+}
+
+interface NetworksFileContent {
+  station: string;
+  monitored_networks: string[];
+  daily: Record<string, DailySurvey>;
+}
+
+/**
+ * Update data/<station_id>/networks.json daily visible spectrum survey in GitHub
+ */
+async function updateNetworksSurvey(env: Env, payload: IngestPayload): Promise<void> {
+  if (!payload.scan_networks || payload.scan_networks.length === 0) return;
+
+  const filePath = `data/${payload.station_id}/networks.json`;
+  const today = new Date().toISOString().slice(0, 10);
+  const now = new Date().toISOString();
+
+  await updateGitHubFile<NetworksFileContent>(
+    env,
+    filePath,
+    (existingContent) => {
+      const doc: NetworksFileContent = existingContent || {
+        station: payload.station_id,
+        monitored_networks: payload.monitored_networks || [],
+        daily: {},
+      };
+
+      if (payload.monitored_networks && payload.monitored_networks.length > 0) {
+        doc.monitored_networks = payload.monitored_networks;
+      }
+
+      if (!doc.daily) doc.daily = {};
+
+      const currentDaily: DailySurvey = doc.daily[today] || {
+        date: today,
+        total_scans: 0,
+        networks_count: 0,
+        networks: [],
+      };
+
+      currentDaily.total_scans = (currentDaily.total_scans || 0) + 1;
+      const totalScans = currentDaily.total_scans;
+
+      const monitoredSet = new Set(doc.monitored_networks || []);
+
+      for (const item of payload.scan_networks!) {
+        if (!item.ssid || item.ssid.trim().length === 0) continue;
+        const ssid = item.ssid.trim();
+        const rssi = typeof item.rssi === 'number' ? item.rssi : -90;
+        const channel = item.channel || item.ch || 1;
+        const security = item.security || item.sec || 'WPA2-PSK';
+
+        const existingNet = currentDaily.networks.find(n => n.ssid === ssid);
+        if (existingNet) {
+          existingNet.observed_scans = (existingNet.observed_scans || 0) + 1;
+          existingNet.total_scans = totalScans;
+          existingNet.min_rssi = Math.min(existingNet.min_rssi, rssi);
+          existingNet.max_rssi = Math.max(existingNet.max_rssi, rssi);
+          existingNet.avg_rssi = Math.round(
+            (existingNet.avg_rssi * (existingNet.observed_scans - 1) + rssi) / existingNet.observed_scans
+          );
+          existingNet.visibility_pct = Math.round((existingNet.observed_scans / totalScans) * 100);
+          existingNet.channel = channel;
+          existingNet.security = security;
+          existingNet.last_seen = now;
+          existingNet.is_monitored = monitoredSet.has(ssid);
+        } else {
+          currentDaily.networks.push({
+            ssid,
+            is_monitored: monitoredSet.has(ssid),
+            avg_rssi: rssi,
+            min_rssi: rssi,
+            max_rssi: rssi,
+            visibility_pct: Math.round((1 / totalScans) * 100),
+            observed_scans: 1,
+            total_scans: totalScans,
+            channel,
+            security,
+            last_seen: now,
+          });
+        }
+      }
+
+      // Update visibility_pct for all networks in today's survey
+      for (const net of currentDaily.networks) {
+        net.total_scans = totalScans;
+        net.visibility_pct = Math.round(((net.observed_scans || 1) / totalScans) * 100);
+      }
+
+      // Sort networks: monitored first, then by avg_rssi descending
+      currentDaily.networks.sort((a, b) => {
+        if (a.is_monitored && !b.is_monitored) return -1;
+        if (!a.is_monitored && b.is_monitored) return 1;
+        return b.avg_rssi - a.avg_rssi;
+      });
+
+      currentDaily.networks_count = currentDaily.networks.length;
+      doc.daily[today] = currentDaily;
+
+      return doc;
+    },
+    `telemetry: update ${payload.station_id} visible networks survey for ${today}`
   );
 }
