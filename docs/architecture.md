@@ -59,11 +59,11 @@ Is Power-On Reset or BOOT button pressed?
 
 ### 2. Periodic Measurement Cycle (Every 10 Minutes)
 ```
-Wake from Timer
+Wake from Sleep
   │
   ├─► Read Battery Voltage via ADC (IO35, 100k/100k divider)
   │
-  ├─► For each configured Monitored Network:
+  ├─► For each configured Monitored Network (never fallback network):
   │     1. Start timer -> Trigger Wi-Fi connection
   │     2. Measure time to Wi-Fi association (T_assoc)
   │     3. Measure time to DHCP IP assignment (T_dhcp)
@@ -77,29 +77,43 @@ Wake from Timer
   │
   ├─► Append measurement to LittleFS `/spool/pending.jsonl`
   │
-  ├─► Is Daily Upload Scheduled (e.g. 03:00 UTC or 24h accumulated)?
-  │     ├── NO  ──► Configure timer for next interval (10 min) -> Deep Sleep
-  │     └── YES ──► Trigger Upload Routine (see below)
+  ├─► Fresh boot / initial setup pending (initial_submitted == false)?
+  │     └── YES ──► Trigger Immediate Initial Assessment Upload (see below)
+  │
+  ├─► Unsubmitted old records from previous day detected?
+  │     └── YES ──► Trigger Catch-Up Upload immediately
+  │
+  ├─► Is Daily Upload Window Active (19:00 - 21:00 UTC / 02:00 - 04:00 ICT)?
+  │     ├── NO  ──► Enter Light Sleep for 10 min
+  │     └── YES ──► Trigger Daily Batch Upload Routine (see below)
 ```
 
-### 3. Daily Upload & NTP Sync Routine
+### 3. Upload & Spectrum Survey Routine
 ```
-Trigger Daily Sync
+Trigger Upload (Initial Assessment, Catch-Up, or Daily Batch)
   │
-  ├─► Try uploading via Monitored Network
-  │     └── If monitored network fails or unavailable:
-  │           Connect to Fallback Network (e.g. "S24" hotspot)
+  ├─► Perform visible Wi-Fi spectrum scan (SSIDs, RSSIs, channels, security)
+  │
+  ├─► Try uploading via Monitored Network(s) in order
+  │     └── If monitored networks fail or have no internet access:
+  │           If fallback enabled, connect to Fallback Network ("S24")
   │
   ├─► Synchronize internal RTC via SNTP (`pool.ntp.org`)
   │
   ├─► Read LittleFS `/spool/pending.jsonl`
   │
   ├─► Transmit payload to Cloudflare Worker endpoint:
-  │     POST https://t18-ingest.<worker>.workers.dev/ingest
-  │     Header: Authorization: Bearer <STATION_SECRET>
+  │     POST https://t18-telemetry-worker.kreier.workers.dev/ingest
+  │     Header: Authorization: Bearer <AUTH_TOKEN>
+  │     Payload: station_id, location, monitored_networks, scan_networks, records
   │
-  ├─► On HTTP 200 OK:
-  │     Clear or truncate `/spool/pending.jsonl`
+  ├─► Cloudflare Worker commits updates to GitHub:
+  │     ├── data/<station_id>/<YYYY-MM>.json (hourly reliability aggregates)
+  │     ├── data/stations.json (registry metadata: location, monitored Wi-Fi, battery)
+  │     └── data/<station_id>/networks.json (daily visible spectrum survey)
   │
-  └─► Go to Deep Sleep
+  ├─► On verified HTTP 200/201 (success: true):
+  │     Mark records committed in flash, rotate spool, and set initial_submitted = true
+  │
+  └─► Enter Light Sleep
 ```

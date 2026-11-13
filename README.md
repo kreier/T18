@@ -77,8 +77,9 @@ Charge controller TP5400, 3.3V LDO, and voltage divider to IO35:
 ├── ROADMAP.md                   # Phased milestone delivery plan
 ├── data/                        # Version-controlled telemetry records
 │   ├── stations.json            # Registry of deployed stations & health status
-│   └── C-703/                   # Station data partitioned by month
-│       └── 2026-11.json
+│   └── C-103/                   # Station data partitioned by month and spectrum survey
+│       ├── 2026-11.json         # Hourly reliability rollups
+│       └── networks.json        # Daily visible Wi-Fi spectrum surveys
 ├── docs/                        # GitHub Pages dashboard & documentation
 │   ├── index.html               # 53-Day hourly heatmap dashboard
 │   ├── style.css                # Responsive dashboard styles (dark theme)
@@ -111,6 +112,7 @@ Charge controller TP5400, 3.3V LDO, and voltage divider to IO35:
 - [ADR 0003: Sleep Mode and Power Strategy (Deep Sleep vs Light Sleep)](docs/adr/0003-sleep-mode-and-power-strategy.md)
 - [ADR 0004: Data Storage Format and Partitioning](docs/adr/0004-data-storage-format-and-partitioning.md)
 - [ADR 0005: Dashboard and Heatmap Visualization](docs/adr/0005-dashboard-and-heatmap-visualization.md)
+- [ADR 0006: Multi-Network Probing, Fallback Backup Channel, and Visible Spectrum Survey](docs/adr/0006-multi-network-probing-fallback-and-spectrum-survey.md)
 
 ---
 

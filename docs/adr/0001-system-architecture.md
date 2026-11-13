@@ -31,19 +31,23 @@ We adopt a decoupled, three-tier architecture:
 ```
 
 1. **Edge Stations (Firmware)**:
-   - On cold start: Broadcasts soft-AP (`T18-Setup-<ID>`) for 60 seconds with captive portal for configuration (station name, monitored SSIDs, fallback SSID, intervals). If a client connects, timeout is cancelled until manual reboot.
-   - Normal operation: Periodic wake (default: 10 minutes) -> probe monitored Wi-Fi network(s) -> record timestamps, connection time, DHCP time, ping/HTTP response times to flash storage (LittleFS).
-   - Once daily: Sync local time via NTP and upload buffered 24h batch to Cloudflare Worker via monitored connection (or fallback network if primary fails).
+   - On cold start: Broadcasts soft-AP (`T18-Setup-<ID>`) for 60 seconds with captive portal for configuration (station ID, location, monitored SSIDs, fallback SSID with enable switch, intervals). If a client connects, timeout is cancelled until manual reboot.
+   - On fresh boot / setup: Immediately executes a first assessment of all configured monitored networks and visible spectrum scan, posting directly to GitHub via the worker (see ADR 0006).
+   - Normal operation: Periodic wake (default: 10 minutes) -> sequentially probe all monitored Wi-Fi network(s) -> record connection time, DHCP time, and HTTP latency probes to flash storage (LittleFS).
+   - Once daily: Sync local time via NTP and upload buffered 24h batch and spectrum survey to Cloudflare Worker via monitored connection (or fallback network "S24" if monitored networks fail or lack internet).
 
 2. **Ingestion Layer (Cloudflare Worker)**:
-   - Provides a lightweight HTTP POST endpoint (e.g., `/api/v1/telemetry`).
+   - Provides lightweight endpoints (`POST /ingest` and `POST /heartbeat`).
    - Validates station token (pre-shared bearer key per station or global secret).
-   - Batches or formats telemetry into clean JSON and commits it directly to the repository via the GitHub REST API (`repos/{owner}/{repo}/contents/...`) using a scoped GitHub Fine-Grained Personal Access Token stored as an encrypted Cloudflare Worker secret.
-   - Prevents exposure of GitHub write credentials to IoT devices.
+   - Batches telemetry into clean JSON and commits it directly to the repository via the GitHub REST API:
+     - Monthly aggregated heatmaps: `data/<station_id>/<YYYY-MM>.json`
+     - Station registry metadata: `data/stations.json`
+     - Visible Wi-Fi spectrum surveys: `data/<station_id>/networks.json`
+   - Caches live telemetry in Cloudflare KV (`/live`) for real-time dashboard responsiveness.
 
 3. **Storage & Visualization Layer (GitHub Repository & Pages)**:
-   - Telemetry data is persisted as JSON files structured by station and month: `data/<station_id>/<year>-<month>.json` to prevent merge conflicts and Git index bloat.
-   - A single-page dashboard hosted on GitHub Pages (`docs/index.html`) fetches raw data files via HTTP GET and renders a 53-day × 24-hour heatmap using SVG/Canvas, showing hourly status (Green, Orange, Purple, Red).
+   - Telemetry data is persisted as JSON files structured by station, month, and survey.
+   - A single-page dashboard hosted on GitHub Pages (`docs/index.html`) fetches raw data files via HTTP GET with cache-busting and live KV synchronization, rendering the 53-day × 24-hour heatmap and interactive visible network spectrum modal.
 
 ## Consequences
 ### Positive

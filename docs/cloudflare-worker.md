@@ -92,7 +92,15 @@ Used by the web dashboard to display live station health.
 - **Query Params**: `?station=C-703` (or omit to get all registered stations).
 - **CORS**: Fully enabled for GitHub Pages (`Access-Control-Allow-Origin: *`).
 
-### `POST /ingest` (Daily 24-Hour Batch Upload)
-Sent by the T18 station once per day during the early morning upload window (19:00–21:00 UTC / 02:00–04:00 ICT).
+### `POST /ingest` (Initial Assessment & Daily 24-Hour Batch Upload)
+Sent by the T18 station:
+1. **Immediately on initial configuration / fresh boot** (`initial_submitted == false`) to verify setup and register station metadata without waiting 24 hours.
+2. **Once per day** during the early morning batch window (19:00–21:00 UTC / 02:00–04:00 ICT) for the 24-hour accumulated telemetry and spectrum survey.
+3. **On backlog recovery** if unsubmitted records from a previous day are detected.
+
 - **Header**: `Authorization: Bearer <AUTH_TOKEN>`
-- **Action**: Aggregates hourly rollups (Green, Orange, Purple, Red) and commits to `data/<station>/<YYYY-MM>.json` via the GitHub REST API.
+- **Action**:
+  - Aggregates hourly rollups (Green, Orange, Purple, Red) and commits to `data/<station>/<YYYY-MM>.json` via the GitHub REST API.
+  - Updates station registry metadata in `data/stations.json` (`location`, `monitored_networks`, `visible_networks`, `battery_mv`, `status`).
+  - Aggregates the daily visible Wi-Fi spectrum survey (`scan_networks`) and commits to `data/<station>/networks.json`.
+  - Caches fresh station status in Cloudflare KV under `live:<station_id>` for immediate dashboard reflection.

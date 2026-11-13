@@ -30,21 +30,27 @@ In the GitHub repository, data must be structured to support the 53-day hourly h
 Telemetry files are stored in the git repository under:
 ```
 data/
-  stations.json                       # Station metadata registry (name, room, status, last_seen)
+  stations.json                       # Station metadata registry (name, location, monitored networks, last_seen)
   <station_id>/
     <YYYY>-<MM>.json                  # Consolidated hourly summaries & raw aggregates for that month
+    networks.json                     # Daily visible Wi-Fi spectrum survey tracking detected networks (ADR 0006)
 ```
 
 Example `data/stations.json`:
 ```json
 [
   {
-    "id": "C-703",
-    "name": "Room C-703 Station",
-    "location": "Building C, Room 703",
-    "last_seen": "2026-11-11T20:10:00Z",
-    "battery_mv": 3950,
-    "battery_pct": 82
+    "id": "C-103",
+    "name": "Room C-103",
+    "location": "Science Lab 103",
+    "monitored_networks": ["Hofkoh", "Saigon", "iot"],
+    "monitored_network": "Hofkoh",
+    "fallback_network": "S24",
+    "last_seen": "2026-11-13T00:27:00Z",
+    "battery_mv": 4200,
+    "battery_pct": 100,
+    "visible_networks": 40,
+    "status": "online"
   }
 ]
 ```

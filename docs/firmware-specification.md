@@ -145,26 +145,36 @@ When the station boots fresh with no prior NTP sync (e.g. after a cold battery i
 
 ## 6. Submission Lifecycle, Confirmation & Fallback Routine
 
-1. **Initial Setup Submission**:
-   - Immediately following new station configuration in the Soft-AP portal (or fresh deployment), the first measurement is posted to the Cloudflare Worker as the initial step.
-   - Allows instant confirmation and verification of station health and configuration on `https://kreier.github.io/T18` without waiting 24 hours.
-2. **Old Data / Backlog Catch-Up**:
+1. **Initial Setup Assessment & Instant Submission**:
+   - Immediately following new station configuration in the Soft-AP portal (or fresh cold boot where `initial_submitted == false`), the station performs a **first assessment**:
+     - Sequentially benchmarks each configured monitored network (Association, DHCP lease, and HTTP target latency probes).
+     - Performs a full visible Wi-Fi spectrum scan (`performVisibleNetworksScan()`) collecting detected SSIDs, RSSIs, channels, and security modes.
+   - Posts this initial assessment immediately to the Cloudflare Worker via `uploadSpoolWithFallback()`.
+   - Allows instant confirmation and immediate appearance of the station's location, actual monitored Wi-Fi SSIDs, visible networks survey, and health on `https://kreier.github.io/T18` without waiting 24 hours.
+2. **Whole-Day Data Collection**:
+   - For all subsequent cycles throughout the day (default: every 10 minutes), the station wakes from light sleep, sequentially benchmarks each configured monitored network, and appends records to `/spool/pending.jsonl` in LittleFS flash.
+   - Probes are strictly isolated to the configured monitored networks; the fallback network is **never monitored**.
+   - Hourly lightweight heartbeats update Cloudflare KV with real-time status.
+3. **Daily Ingestion Batch Window**:
+   - Scheduled daily between **19:00 and 21:00 UTC** (corresponding to **02:00 to 04:00 local Vietnam time / UTC+7**).
+   - Only triggers once per 24-hour cycle (persisted in `/spool/state.json`).
+   - The station executes `uploadSpoolWithFallback()`, posting the entire day's accumulated telemetry records along with the latest visible Wi-Fi spectrum scan to `POST /ingest`.
+   - The Cloudflare Worker aggregates all records into hourly averages (association time, DHCP time, target latencies, and color grading) and daily network survey statistics, committing the updates to GitHub.
+4. **Old Data / Backlog Catch-Up**:
    - The firmware inspects `/spool/pending.jsonl` every cycle.
    - If unsubmitted records from a previous day (`record_day < current_day`) or older than 20 hours are detected (e.g. from an outage or missed 2:00 AM window), an immediate catch-up upload is initiated without waiting for 19:00 UTC.
-3. **Daily Upload Window**:
-   - Scheduled daily between **19:00 and 21:00 UTC** (which corresponds to **02:00 to 04:00 local Vietnam time / UTC+7**).
-   - Only triggers once per 24-hour cycle (persisted in `/spool/state.json`).
-4. **Network Selection**:
-   - Attempts connection to the primary monitored network.
-   - If monitored network connection or HTTP POST fails, immediately switches to the configured **Fallback Network** (`S24` / `12345678`).
-5. **Two-Way Confirmation & Flash Commitment**:
+5. **Fallback Network Selection & Strict Backup Isolation**:
+   - The station iterates through each configured monitored network in order.
+   - If login to the monitored networks fails or if they lack internet connectivity (e.g. HTTP POST fails to connect to the ingestion endpoint), the station automatically connects to the configured **Fallback Network** (`S24` / `12345678`), provided it is enabled (`fallback_enabled == true`).
+   - The fallback network is used strictly as a backup communication channel for uploading spooled telemetry and heartbeats. It is never included in the reliability monitoring probe set.
+6. **Two-Way Confirmation & Flash Commitment**:
    - Posts buffered records to `POST /ingest` with `Authorization: Bearer <INGESTION_SECRET>`.
-   - The Cloudflare Worker validates the batch, commits to GitHub, and returns `HTTP 200` with `{"success": true, ...}`.
+   - The Cloudflare Worker validates the batch, commits updates to GitHub (`data/<station>/<YYYY-MM>.json`, `data/stations.json`, `data/<station>/networks.json`), and returns `HTTP 200` with `{"success": true, ...}`.
    - **Only upon verified confirmation** (`success: true`) does the ESP32 mark records in flash as submitted:
      - Pending records are appended to `/spool/submitted.jsonl` with `"sub": true`.
      - `/spool/pending.jsonl` is removed.
-     - Persistent state is written to LittleFS `/spool/state.json`.
-   - If the upload fails or worker confirmation is missing, records remain marked as pending in flash for subsequent retry.
+     - Persistent state is written to LittleFS `/spool/state.json` (`initial_submitted = true`, `last_upload_epoch`, `last_upload_day`).
+   - If the upload fails or worker confirmation is missing, records remain marked as pending in flash for retry on the next probe cycle.
 
 ---
 
