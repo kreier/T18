@@ -26,7 +26,7 @@ The T18 Network Reliability Monitor is an autonomous, battery-powered IoT teleme
                            │ GitHub REST API (Contents)
                            ▼
 ┌────────────────────────────────────────────────────────┐
-│            GitHub Repository (kreier/T18)              │
+│            GitHub Repository (flynn0/T18)              │
 │  - `data/stations.json` (Registry)                     │
 │  - `data/<station>/<YYYY-MM>.json` (Hourly Metrics)    │
 └──────────────────────────┬─────────────────────────────┘
@@ -34,7 +34,7 @@ The T18 Network Reliability Monitor is an autonomous, battery-powered IoT teleme
                            │ Static HTTP GET
                            ▼
 ┌────────────────────────────────────────────────────────┐
-│          Web Dashboard (kreier.github.io/T18)          │
+│          Web Dashboard (flynn0.github.io/T18)          │
 │  - GitHub Pages served from `/docs`                    │
 │  - 53-Day × 24-Hour Hourly Heatmap Grid                │
 │  - Station Switcher, Battery Graph, Latency Metrics    │
@@ -103,7 +103,7 @@ Trigger Upload (Initial Assessment, Catch-Up, or Daily Batch)
   ├─► Read LittleFS `/spool/pending.jsonl`
   │
   ├─► Transmit payload to Cloudflare Worker endpoint:
-  │     POST https://t18-telemetry-worker.kreier.workers.dev/ingest
+  │     POST https://t18.dhsp.workers.dev/data
   │     Header: Authorization: Bearer <AUTH_TOKEN>
   │     Payload: station_id, location, monitored_networks, scan_networks, records
   │

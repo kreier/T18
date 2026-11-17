@@ -18,7 +18,7 @@ We deploy a serverless **Cloudflare Worker** as an ingestion proxy:
 3. The Cloudflare Worker:
    - Validates the PSK against environment secret `AUTH_TOKEN`.
    - Validates the incoming schema (station name, timestamp sanity, measurement structure).
-   - Retrieves the existing month file (`data/<station>/<YYYY-MM>.json`) via GitHub REST API if present, merges the new hourly data records (deduplicating by timestamp), and writes the updated file back using a GitHub Fine-Grained Personal Access Token with only contents:write permissions on `kreier/T18`.
+   - Retrieves the existing month file (`data/<station>/<YYYY-MM>.json`) via GitHub REST API if present, merges the new hourly data records (deduplicating by timestamp), and writes the updated file back using a GitHub Fine-Grained Personal Access Token with only contents:write permissions on `flynn0/T18`.
    - Returns a HTTP 200 OK with confirmation timestamp back to the ESP32 so the station can safely mark the buffered records as committed in LittleFS.
 
 ## Consequences

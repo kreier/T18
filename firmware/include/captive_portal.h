@@ -254,7 +254,11 @@ private:
         html += F("<div class='section-title'>Cloudflare Worker & Provisioning</div>");
         html += F("<div class='field'><label for='worker_url'>Worker Base URL *</label>"
                   "<input type='url' id='worker_url' name='worker_url' required maxlength='127' value='");
-        html += String(strlen(config.worker_url) > 0 ? config.worker_url : DEFAULT_WORKER_URL);
+        String dispWorkerUrl = (strlen(config.worker_url) > 0) ? String(config.worker_url) : String(DEFAULT_WORKER_URL);
+        if (dispWorkerUrl.indexOf("kreier.workers.dev") >= 0 || dispWorkerUrl.length() == 0) {
+            dispWorkerUrl = DEFAULT_WORKER_URL;
+        }
+        html += dispWorkerUrl;
         html += F("'></div>");
 
         html += F("<div class='field'><label for='master_phrase'>Master Phrase (Bootstrap Secret) *</label>"
@@ -300,7 +304,7 @@ private:
         workerUrl.trim();
         masterPhrase.trim();
 
-        if (workerUrl.indexOf("wifi.kreier.workers.dev") >= 0 || workerUrl.length() == 0) {
+        if (workerUrl.indexOf("kreier.workers.dev") >= 0 || workerUrl.length() == 0) {
             workerUrl = DEFAULT_WORKER_URL;
         }
 

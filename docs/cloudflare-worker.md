@@ -11,7 +11,7 @@ The Cloudflare Worker functions as both:
 ### Prerequisites
 - [Node.js](https://nodejs.org/) installed (v18+).
 - A free [Cloudflare Account](https://dash.cloudflare.com/).
-- A GitHub Fine-Grained Personal Access Token with `contents:write` on `kreier/T18`.
+- A GitHub Fine-Grained Personal Access Token with `contents:write` on `flynn0/T18`.
 
 ### Step 1: Install Dependencies
 Inside the `worker/` directory:

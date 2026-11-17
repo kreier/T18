@@ -5,7 +5,7 @@
 #include "board_pins.h"
 
 #define MAX_MONITORED_NETWORKS 5
-#define DEFAULT_WORKER_URL "https://t18.kreier.workers.dev"
+#define DEFAULT_WORKER_URL "https://t18.dhsp.workers.dev"
 
 struct WifiNetworkConfig {
     char ssid[33];

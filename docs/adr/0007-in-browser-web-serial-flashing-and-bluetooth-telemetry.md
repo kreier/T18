@@ -7,7 +7,7 @@ Accepted
 2026-11-16
 
 ## Context
-The `kreier/T18` telemetry fleet monitor previously required operators to install desktop toolchains (PlatformIO or Arduino IDE) or set up Python with `esptool.py` to flash the ESP32 firmware onto TTGO T18, T8, or DevKit nodes. Furthermore, 2.4 GHz RF contention from non-Wi-Fi devices (smartphones, audio headsets, beacons, wearables) was invisible to the telemetry pipeline.
+The `flynn0/T18` telemetry fleet monitor previously required operators to install desktop toolchains (PlatformIO or Arduino IDE) or set up Python with `esptool.py` to flash the ESP32 firmware onto TTGO T18, T8, or DevKit nodes. Furthermore, 2.4 GHz RF contention from non-Wi-Fi devices (smartphones, audio headsets, beacons, wearables) was invisible to the telemetry pipeline.
 
 ## Decision
 

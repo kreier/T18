@@ -52,7 +52,7 @@ struct BluetoothScanResult {
 
 class BluetoothScanner {
 public:
-    static BluetoothScanResult performScan(uint32_t bleDurationSec = 3, uint32_t classicDurationMs = 3000) {
+    static BluetoothScanResult performScan(uint32_t bleDurationSec = 3, uint32_t classicDurationMs = 2000) {
         BluetoothScanResult result;
         uint32_t startMs = millis();
         Serial.println(F("[Bluetooth] Initiating 2.4 GHz BLE and Classic Bluetooth Spectrum Scan..."));

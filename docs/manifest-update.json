@@ -1,7 +1,7 @@
 {
   "name": "T18 Wi-Fi Monitor (Update Only)",
-  "version": "1.0.3",
-  "funding_url": "https://github.com/kreier/T18",
+  "version": "1.1.0",
+  "funding_url": "https://github.com/flynn0/T18",
   "new_install_prompt_erase": false,
   "builds": [
     {

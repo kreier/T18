@@ -4,7 +4,7 @@
 Accepted
 
 ## Context
-The project needs a web dashboard hosted at `https://kreier.github.io/T18` to visualize network reliability across monitored stations.
+The project needs a web dashboard hosted at `https://flynn0.github.io/T18` to visualize network reliability across monitored stations.
 Key requirements:
 1. Multi-station selection (e.g. "C-703", "Library-2F", "Lab-101").
 2. 53-day heat map for the selected station, organized by day (columns or rows) and hour (00:00 to 23:00, 24 boxes per day).

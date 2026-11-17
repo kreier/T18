@@ -1,6 +1,6 @@
 # Web Dashboard & Visualization Specification
 
-The web dashboard is hosted statically on GitHub Pages at [https://kreier.github.io/T18](https://kreier.github.io/T18).
+The web dashboard is hosted statically on GitHub Pages at [https://flynn0.github.io/T18](https://flynn0.github.io/T18) and on Cloudflare Edge at [https://t18.dhsp.workers.dev](https://t18.dhsp.workers.dev).
 
 ---
 

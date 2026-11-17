@@ -1,16 +1,16 @@
 # AGENTS.md — AI Agent Guidance & Architectural Reference
 
-This document serves as the primary technical specification and operational playbook for autonomous AI coding agents working on the `kreier/T18` repository.
+This document serves as the primary technical specification and operational playbook for autonomous AI coding agents working on the `flynn0/T18` repository.
 
 ---
 
 ## 1. System Overview & Architecture
 
-`kreier/T18` is an edge-native, zero-trust telemetry fleet monitoring system tailored for the **LILYGO TTGO T18** (and fully compatible with **LILYGO T8**, ESP32 DevKit V1, and custom boards):
+`flynn0/T18` is an edge-native, zero-trust telemetry fleet monitoring system tailored for the **LILYGO TTGO T18** (and fully compatible with **LILYGO T8**, ESP32 DevKit V1, and custom boards):
 
-- **Edge Nodes (Firmware)**: ESP32 microcontrollers operating unattended on 18650 battery or USB. Every 10 minutes, nodes wake from light sleep, run 13-channel promiscuous congestion surveys (with dynamic LED feedback and BOOT button interrupt), 2.4 GHz spectrum Wi-Fi scans, BLE & Classic Bluetooth sweeps with advertising payload de-randomization, network latency probes, and IO35 battery sensing, uploading telemetry before returning to light sleep.
-- **Edge Backend (Worker & D1)**: Cloudflare Worker written in TypeScript deployed at `https://t18.kreier.workers.dev` backed by Cloudflare D1 (`t18-mon-db`). Handles device registration, bearer token validation, telemetry batch ingestion, two-tier caching, automated 30-day data retention, web serial flasher assets, and zero-redirect OTA streaming proxies.
-- **Dual Dashboards & Web Installer**: Server-rendered dashboard on Cloudflare Worker (`https://t18.kreier.workers.dev`) and static mirror on GitHub Pages (`https://kreier.github.io/T18`) driven by a single-source frontend engine in `worker/src/frontend.ts`. Includes in-browser Web Serial firmware flashing via ESP Web Tools.
+- **Edge Nodes (Firmware)**: ESP32 microcontrollers operating unattended on 18650 battery or USB. Every 10 minutes, nodes wake from light sleep, run 13-channel promiscuous congestion surveys (with dynamic LED feedback and BOOT button interrupt), 2.4 GHz spectrum Wi-Fi scans, BLE sweeps with advertising payload de-randomization and 24-hour flash persistence, network latency probes, and IO35 battery sensing, uploading telemetry before returning to light sleep.
+- **Edge Backend (Worker & D1)**: Cloudflare Worker written in TypeScript deployed at `https://t18.dhsp.workers.dev` backed by Cloudflare D1 (`t18-mon-db`). Handles device registration, bearer token validation, telemetry batch ingestion, two-tier caching, automated 30-day data retention, web serial flasher assets, and zero-redirect OTA streaming proxies.
+- **Dual Dashboards & Web Installer**: Server-rendered dashboard on Cloudflare Worker (`https://t18.dhsp.workers.dev`) and static mirror on GitHub Pages (`https://flynn0.github.io/T18`) driven by a single-source frontend engine in `worker/src/frontend.ts`. Includes in-browser Web Serial firmware flashing via ESP Web Tools.
 
 ---
 

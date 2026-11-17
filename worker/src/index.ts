@@ -44,8 +44,8 @@ export default {
       if (path === "/manifest-update.json" || path === "/firmware/manifest-update.json") {
         const manifest = {
           name: "T18 Wi-Fi Monitor (Update Only)",
-          version: env.STABLE_VERSION || "1.0.3",
-          funding_url: "https://github.com/kreier/T18",
+          version: env.STABLE_VERSION || "1.1.0",
+          funding_url: "https://github.com/flynn0/T18",
           new_install_prompt_erase: false,
           builds: [
             {
@@ -68,9 +68,9 @@ export default {
 
       if (path === "/manifest.json" || path === "/firmware/manifest.json") {
         const manifest = {
-          name: "T18 Wi-Fi Monitor (kreier/T18)",
-          version: env.STABLE_VERSION || "1.0.3",
-          funding_url: "https://github.com/kreier/T18",
+          name: "T18 Wi-Fi Monitor (flynn0/T18)",
+          version: env.STABLE_VERSION || "1.1.0",
+          funding_url: "https://github.com/flynn0/T18",
           new_install_prompt_erase: true,
           builds: [
             {

@@ -6,7 +6,7 @@ Accepted
 ## Context
 We need a distributed network reliability monitoring solution that operates autonomously from battery-powered IoT stations (TTGO T18 ESP32 with 18650 cell). The stations must periodically measure local Wi-Fi link establishment, DHCP lease acquisition, and WAN reachability across multiple targets, recording telemetry over time.
 
-Measurements must be centrally aggregated and visualized on a public static dashboard hosted on GitHub Pages (`https://kreier.github.io/T18`), displaying a 53-day, 24-hour hourly reliability heatmap per station.
+Measurements must be centrally aggregated and visualized on a public static dashboard hosted on GitHub Pages (`https://flynn0.github.io/T18`), displaying a 53-day, 24-hour hourly reliability heatmap per station.
 
 Key constraints:
 1. Low-power, battery-operated field stations (months of unattended operation).

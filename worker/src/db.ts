@@ -438,6 +438,86 @@ export class Database {
 
   async saveNetworkDiagnostics(stationId: string, timestamp: number, diag: NetworkDiagnosticsPayload): Promise<void> {
     const ssid = diag.ssid || "primary";
+
+    // 1. Fetch current diagnostics for change detection (ignoring DNS response times)
+    const existing = await this.db
+      .prepare("SELECT * FROM station_network_diagnostics WHERE station_id = ? AND ssid = ?")
+      .bind(stationId, ssid)
+      .first<NetworkDiagnosticsRecord>();
+
+    const gwIp = diag.gateway_ip ?? null;
+    const gwVendor = diag.gateway_vendor ?? "Unknown";
+    const webExposed = diag.web_exposed ? 1 : 0;
+    const loginUrl = diag.login_url ?? null;
+    const httpsRedirect = diag.https_redirect ? 1 : 0;
+    const mtu1500 = diag.mtu_1500_ok ? 1 : 0;
+    const mtu1492 = diag.mtu_1492_ok ? 1 : 0;
+    const mtu1420 = diag.mtu_1420_ok ? 1 : 0;
+    const dnsIpv6Timeout = diag.dns_ipv6_timeout ? 1 : 0;
+    const dnsRebindBlocked = diag.dns_rebind_blocked ? 1 : 0;
+    const captiveDetected = diag.captive_portal_detected ? 1 : 0;
+    const openPorts = diag.open_ports ?? null;
+    const detailsJson = diag.details_json ?? null;
+
+    let isChanged = false;
+    if (!existing) {
+      isChanged = true; // Initial observation recorded long-term once
+    } else {
+      isChanged = (
+        existing.gateway_ip !== gwIp ||
+        existing.gateway_vendor !== gwVendor ||
+        (existing.web_exposed ? 1 : 0) !== webExposed ||
+        existing.login_url !== loginUrl ||
+        (existing.https_redirect ? 1 : 0) !== httpsRedirect ||
+        (existing.mtu_1500_ok ? 1 : 0) !== mtu1500 ||
+        (existing.mtu_1492_ok ? 1 : 0) !== mtu1492 ||
+        (existing.mtu_1420_ok ? 1 : 0) !== mtu1420 ||
+        (existing.dns_ipv6_timeout ? 1 : 0) !== dnsIpv6Timeout ||
+        (existing.dns_rebind_blocked ? 1 : 0) !== dnsRebindBlocked ||
+        (existing.captive_portal_detected ? 1 : 0) !== captiveDetected ||
+        existing.open_ports !== openPorts ||
+        existing.details_json !== detailsJson
+      );
+    }
+
+    // 2. If initial record or configuration/firewall changed, insert into long-term history
+    if (isChanged) {
+      try {
+        await this.db
+          .prepare(`
+            INSERT INTO station_network_diagnostics_history (
+              station_id, ssid, timestamp, gateway_ip, gateway_vendor,
+              web_exposed, login_url, https_redirect,
+              mtu_1500_ok, mtu_1492_ok, mtu_1420_ok,
+              dns_ipv6_timeout, dns_rebind_blocked, captive_portal_detected,
+              open_ports, details_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `)
+          .bind(
+            stationId,
+            ssid,
+            timestamp,
+            gwIp,
+            gwVendor,
+            webExposed,
+            loginUrl,
+            httpsRedirect,
+            mtu1500,
+            mtu1492,
+            mtu1420,
+            dnsIpv6Timeout,
+            dnsRebindBlocked,
+            captiveDetected,
+            openPorts,
+            detailsJson
+          )
+          .run();
+      } catch (err) {
+        console.error("[DB] Error recording diagnostics history:", err);
+      }
+    }
+
+    // 3. Upsert latest diagnostics record for real-time dashboard display
     await this.db
       .prepare(`
         INSERT INTO station_network_diagnostics (
@@ -469,21 +549,21 @@ export class Database {
         stationId,
         ssid,
         timestamp,
-        diag.gateway_ip ?? null,
-        diag.gateway_vendor ?? "Unknown",
-        diag.web_exposed ? 1 : 0,
-        diag.login_url ?? null,
-        diag.https_redirect ? 1 : 0,
-        diag.mtu_1500_ok ? 1 : 0,
-        diag.mtu_1492_ok ? 1 : 0,
-        diag.mtu_1420_ok ? 1 : 0,
+        gwIp,
+        gwVendor,
+        webExposed,
+        loginUrl,
+        httpsRedirect,
+        mtu1500,
+        mtu1492,
+        mtu1420,
         diag.dns_ipv4_ms ?? null,
         diag.dns_ipv6_ms ?? null,
-        diag.dns_ipv6_timeout ? 1 : 0,
-        diag.dns_rebind_blocked ? 1 : 0,
-        diag.captive_portal_detected ? 1 : 0,
-        diag.open_ports ?? null,
-        diag.details_json ?? null
+        dnsIpv6Timeout,
+        dnsRebindBlocked,
+        captiveDetected,
+        openPorts,
+        detailsJson
       )
       .run();
   }

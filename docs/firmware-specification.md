@@ -150,7 +150,7 @@ When the station boots fresh with no prior NTP sync (e.g. after a cold battery i
      - Sequentially benchmarks each configured monitored network (Association, DHCP lease, and HTTP target latency probes).
      - Performs a full visible Wi-Fi spectrum scan (`performVisibleNetworksScan()`) collecting detected SSIDs, RSSIs, channels, and security modes.
    - Posts this initial assessment immediately to the Cloudflare Worker via `uploadSpoolWithFallback()`.
-   - Allows instant confirmation and immediate appearance of the station's location, actual monitored Wi-Fi SSIDs, visible networks survey, and health on `https://kreier.github.io/T18` without waiting 24 hours.
+   - Allows instant confirmation and immediate appearance of the station's location, actual monitored Wi-Fi SSIDs, visible networks survey, and health on `https://flynn0.github.io/T18` without waiting 24 hours.
 2. **Whole-Day Data Collection**:
    - For all subsequent cycles throughout the day (default: every 10 minutes), the station wakes from light sleep, sequentially benchmarks each configured monitored network, and appends records to `/spool/pending.jsonl` in LittleFS flash.
    - Probes are strictly isolated to the configured monitored networks; the fallback network is **never monitored**.

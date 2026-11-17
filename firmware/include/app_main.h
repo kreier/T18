@@ -40,7 +40,7 @@ public:
         pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
 
         Serial.println(F("\n========================================"));
-        Serial.printf(" kreier/T18 Unified Firmware v%s (%s)\n", FIRMWARE_VERSION, _config.hw.board_name);
+        Serial.printf(" flynn0/T18 Unified Firmware v%s (%s)\n", FIRMWARE_VERSION, _config.hw.board_name);
         Serial.printf(" Target LED: GPIO %d | Battery Pin: GPIO %d\n",
                       _config.hw.status_led_pin, _config.hw.battery_pin);
         Serial.printf(" Power Bank Keep-Alive: %s\n", _config.powerbank_keepalive ? "ENABLED (500ms/20s)" : "DISABLED");
@@ -61,14 +61,35 @@ public:
 
     void loop() {
         uint32_t cycleStartMs = millis();
-        Serial.println(F("\n>>> Starting 10-Minute Measurement Cycle <<<"));
 
-        // 1. Promiscuous 13-channel congestion survey (LED on per channel, 100ms off between, BOOT button monitored)
-        bool bootPressed = false;
-        std::vector<ChannelUtilizationItem> chanResults = ChannelAnalyzer::measureChannels(2000, &_led, &bootPressed);
+        // 1. Read battery voltage and determine power mode
+        uint16_t batteryMv = BatteryReader::readBatteryMilliVolts(_config.hw);
+        bool onBattery = (_config.hw.battery_pin >= 0 && batteryMv > 0 && batteryMv <= 4200);
 
-        if (bootPressed) {
-            Serial.println(F("[Main] BOOT button pressed during channel scan! Launching setup portal..."));
+        uint32_t targetIntervalSec = onBattery ? 600 : 120; // 10m on battery, 2m if powered (> 4.2V or no battery)
+        bool is10mBoundary = false;
+        bool is30mBoundary = false;
+
+        if (onBattery) {
+            // Every cycle on battery is a 10-minute cycle
+            is10mBoundary = true;
+            is30mBoundary = (_batteryCycleCount % 3 == 0);
+            Serial.printf("\n>>> [Battery Mode: %u mV] Starting 10-Min Cycle #%u (30-Min Cadence: %s) <<<\n",
+                          batteryMv, (unsigned)_batteryCycleCount, is30mBoundary ? "YES" : "NO");
+        } else {
+            // Powered mode: 2-minute cycle, accumulating into 10-minute interval
+            _usbSubcycle++;
+            is10mBoundary = (_usbSubcycle >= 5);
+            if (is10mBoundary) {
+                is30mBoundary = (_powered10mCount % 3 == 0);
+            }
+            Serial.printf("\n>>> [Powered Mode: %u mV] 2-Min Subcycle %u/5 (10-Min Boundary: %s) <<<\n",
+                          batteryMv, (unsigned)_usbSubcycle, is10mBoundary ? "YES" : "NO");
+        }
+
+        // 2. Check BOOT button
+        if (digitalRead(BOOT_BUTTON_PIN) == LOW && checkBootButtonHold(1500)) {
+            Serial.println(F("[Main] BOOT button pressed! Launching setup portal..."));
             _portal.startPortal(_config, 60);
             _configMgr.loadConfig(_config);
             _led.setPin(_config.hw.status_led_pin);
@@ -76,21 +97,59 @@ public:
             return;
         }
 
-        // Store 30-minute average channel utilization in 48-slot machine history buffer
-        if (!chanResults.empty()) {
-            ChannelHistory::instance().recordCycle(chanResults, _ntp.getCurrentEpoch());
+        // 3. Promiscuous 13-channel congestion survey (Task 3)
+        // On battery: every 30 minutes; Powered: every 2 minutes
+        bool shouldScanChannels = onBattery ? is30mBoundary : true;
+        std::vector<ChannelUtilizationItem> chanResults;
+        if (shouldScanChannels) {
+            bool bootPressed = false;
+            chanResults = ChannelAnalyzer::measureChannels(2000, &_led, &bootPressed);
+            if (bootPressed) {
+                Serial.println(F("[Main] BOOT button pressed during channel scan! Launching setup portal..."));
+                _portal.startPortal(_config, 60);
+                _configMgr.loadConfig(_config);
+                _led.setPin(_config.hw.status_led_pin);
+                ensureDeviceRegistered();
+                return;
+            }
+            accumulateChannels(chanResults);
+        } else {
+            Serial.println(F("[Main] Skipping 13-channel survey to conserve battery (30-min cadence)."));
         }
 
-        // 2. Perform 2.4 GHz spectrum Wi-Fi scan survey
+        // 4. Wi-Fi scan survey (Task 1)
+        // On battery: every 10 min; Powered: every 2 min
         _led.setSolid(true);
         uint32_t scanDurationMs = 0;
         std::vector<SurveyItem> scanResults = WifiScanner::performScan(scanDurationMs);
         _led.setOff();
+        _ramScanDurationMs += scanDurationMs;
+        accumulateSurvey(scanResults);
 
-        // Identify visible monitored networks and backup AP from scan results
+        // 5. Bluetooth 2.4 GHz Scan (Task 2: BLE & Classic)
+        // On battery: every 10 min; Powered: every 2 min
+        BluetoothScanResult btScan = BluetoothScanner::performScan(3, 2000);
+        accumulateBt(btScan);
+
+        // If in powered mode and not yet at 10-minute boundary, enter light sleep now
+        if (!onBattery && !is10mBoundary) {
+            uint32_t elapsedMs = millis() - cycleStartMs;
+            uint32_t sleepMs = 10000;
+            if (elapsedMs < (targetIntervalSec * 1000)) {
+                sleepMs = (targetIntervalSec * 1000) - elapsedMs;
+            }
+            enterLightSleep(sleepMs);
+            return;
+        }
+
+        // =========================================================================
+        // 10-MINUTE INTERVAL PROCESSING (Triggered every 10m on battery or powered)
+        // =========================================================================
+
+        // Identify visible monitored networks and backup AP from 10-minute accumulated scan
         std::vector<uint8_t> visibleMonitoredIndices;
         for (uint8_t i = 0; i < _config.network_count; i++) {
-            for (const auto &item : scanResults) {
+            for (const auto &item : _ramSurvey) {
                 if (item.ssid.length() > 0 && item.ssid == _config.networks[i].ssid) {
                     visibleMonitoredIndices.push_back(i);
                     break;
@@ -99,46 +158,34 @@ public:
         }
 
         bool backupApVisible = false;
-        if (_config.backup_enabled && strlen(_config.backup_ssid) > 0) {
-            for (const auto &item : scanResults) {
-                if (item.ssid == _config.backup_ssid) {
-                    backupApVisible = true;
-                    break;
-                }
-            }
-            if (backupApVisible) {
-                Serial.printf("[Main] Backup AP '%s' detected in Wi-Fi scan.\n", _config.backup_ssid);
+        for (const auto &item : _ramSurvey) {
+            if (item.ssid == "S24" || (_config.backup_enabled && strlen(_config.backup_ssid) > 0 && item.ssid == _config.backup_ssid)) {
+                backupApVisible = true;
+                break;
             }
         }
+        if (backupApVisible) {
+            Serial.println(F("[Main] Backup AP detected in 10-minute Wi-Fi scan."));
+        }
 
-        // 3. Maintain NTP time synchronization (re-sync every 24h or if uncalibrated) and early OTA check
-        if (_ntp.shouldSync()) {
+        // Check NTP time synchronization if needed
+        if (_ntp.shouldSync() && (!visibleMonitoredIndices.empty() || backupApVisible)) {
             bool ntpConnected = false;
-
-            // 3a. Try visible monitored networks first
             for (uint8_t idx : visibleMonitoredIndices) {
-                Serial.printf("[Main] Visible monitored AP '%s' detected. Connecting for NTP sync...\n",
-                              _config.networks[idx].ssid);
                 if (connectWifiSpecific(_config.networks[idx].ssid, _config.networks[idx].password, 15000)) {
                     ntpConnected = true;
                     break;
                 }
             }
-
-            // 3b. If no monitored network connected, try backup AP if visible
-            if (!ntpConnected && _config.backup_enabled && backupApVisible && strlen(_config.backup_ssid) > 0) {
-                Serial.printf("[Main] Monitored networks unavailable for NTP. Connecting to backup AP '%s'...\n",
-                              _config.backup_ssid);
-                if (connectWifiSpecific(_config.backup_ssid, _config.backup_pass, 15000)) {
+            if (!ntpConnected && backupApVisible) {
+                const char *bSsid = (_config.backup_enabled && strlen(_config.backup_ssid) > 0) ? _config.backup_ssid : "S24";
+                const char *bPass = (_config.backup_enabled && strlen(_config.backup_pass) > 0) ? _config.backup_pass : "12345678";
+                if (connectWifiSpecific(bSsid, bPass, 15000)) {
                     ntpConnected = true;
                 }
             }
-
-            // 3c. If connected, perform NTP sync and early OTA check
             if (ntpConnected) {
                 _ntp.syncTime();
-
-                // Self-healing: Check for OTA updates immediately on boot before long measurements
                 uint64_t ntpEpoch = _ntp.getCurrentEpoch();
                 if (_lastOtaCheckEpoch == 0 || (ntpEpoch >= _lastOtaCheckEpoch + 3600)) {
                     _lastOtaCheckEpoch = ntpEpoch;
@@ -146,74 +193,71 @@ public:
                                                                FIRMWARE_VERSION, _config.hw);
                     if (updating) return;
                 }
-
                 WiFi.disconnect(true);
-            } else {
-                Serial.println(F("[Main] No visible uplink for NTP sync (monitored networks and backup AP unavailable). Proceeding with measurements."));
             }
         }
         uint64_t currentEpoch = _ntp.getCurrentEpoch();
 
-        // 4. Read battery voltage
-        uint16_t batteryMv = BatteryReader::readBatteryMilliVolts(_config.hw);
-        if (batteryMv > 0) {
-            Serial.printf("[Main] Battery Voltage: %u mV (Divider: %.2f)\n", batteryMv, _config.hw.battery_divider);
-        }
-
-        // 4.5. Bluetooth 2.4 GHz Scan (BLE & Classic)
-        BluetoothScanResult btScan = BluetoothScanner::performScan(3, 3000);
-
-        // 5. Sequentially probe configured monitored networks
+        // Task 4: Connection speed & latencies
+        // On battery: every 30m; Powered: every 10m
+        // STRICT REQUIREMENT: Only test defined wifi stations that appeared in 1) (visibleMonitoredIndices)
+        bool shouldProbeSpeed = onBattery ? is30mBoundary : true;
         std::vector<NetworkMeasurement> measurements;
-        bool shouldRunDaily = false;
-        if (_lastDailyCheckEpoch == 0 || (currentEpoch > _lastDailyCheckEpoch + 86400)) {
-            shouldRunDaily = true;
-        }
-
         std::vector<NetworkDiagnostics> dailyDiags;
+        bool shouldRunDaily = (_lastDailyCheckEpoch == 0 || (currentEpoch > _lastDailyCheckEpoch + 86400));
 
-        for (uint8_t i = 0; i < _config.network_count; i++) {
-            NetworkMeasurement m = LatencyProber::probeNetwork(_config.networks[i], 15000);
-            measurements.push_back(m);
+        if (shouldProbeSpeed) {
+            for (uint8_t idx : visibleMonitoredIndices) {
+                Serial.printf("[Main] Probing visible station '%s'...\n", _config.networks[idx].ssid);
+                NetworkMeasurement m = LatencyProber::probeNetwork(_config.networks[idx], 15000);
+                measurements.push_back(m);
 
-            if (shouldRunDaily && m.status == "connected") {
-                dailyDiags.push_back(LatencyProber::runDailyDiagnostics(_config.networks[i]));
+                if (shouldRunDaily && m.status == "connected") {
+                    dailyDiags.push_back(LatencyProber::runDailyDiagnostics(_config.networks[idx]));
+                }
+                delay(200);
             }
-            delay(200);
-        }
-        if (shouldRunDaily && !dailyDiags.empty()) {
-            _lastDailyCheckEpoch = currentEpoch;
+            if (shouldRunDaily && !dailyDiags.empty()) {
+                _lastDailyCheckEpoch = currentEpoch;
+            }
+        } else {
+            Serial.println(F("[Main] Skipping station latency probing to conserve battery (30-min cadence)."));
         }
         _led.setOff();
 
-        // 6. Package cycle telemetry
+        // Record 30-minute revolving slot into ChannelHistory buffer (kept in RAM; written to flash only if offline)
+        if (is30mBoundary) {
+            ChannelHistory::instance().recordCycle(_ramChan, _ramBt.ble_unique_devices, _ramBt.classic_total, batteryMv, currentEpoch);
+        }
+
+        // Package cycle telemetry
         CycleTelemetry cycle;
         cycle.station_id = _config.station_id;
         cycle.timestamp = currentEpoch;
-        cycle.scan_duration_ms = scanDurationMs;
+        cycle.scan_duration_ms = _ramScanDurationMs;
         cycle.battery_mv = batteryMv;
         cycle.board_type = _config.hw.board_name;
         cycle.measurements = measurements;
-        cycle.survey = scanResults;
+        cycle.survey = _ramSurvey;
         cycle.has_diagnostics = !dailyDiags.empty();
         cycle.diagnostics = dailyDiags;
-        cycle.has_channel_utilization = !chanResults.empty();
-        cycle.channel_utilization = chanResults;
+        cycle.has_channel_utilization = !_ramChan.empty();
+        cycle.channel_utilization = _ramChan;
 
         // Bluetooth telemetry
         cycle.has_bluetooth = true;
-        cycle.bluetooth.scan_duration_ms = btScan.scan_duration_ms;
-        cycle.bluetooth.ble_total_packets = btScan.ble_total_packets;
-        cycle.bluetooth.ble_total_macs = btScan.ble_total_macs;
-        cycle.bluetooth.ble_unique_devices = btScan.ble_unique_devices;
-        cycle.bluetooth.ble_random_macs = btScan.ble_random_macs;
-        cycle.bluetooth.ble_public_macs = btScan.ble_public_macs;
-        cycle.bluetooth.ble_beacons = btScan.ble_beacons;
-        cycle.bluetooth.ble_smartphones = btScan.ble_smartphones;
-        cycle.bluetooth.ble_wearables = btScan.ble_wearables;
-        cycle.bluetooth.ble_audio = btScan.ble_audio;
-        cycle.bluetooth.ble_other = btScan.ble_other;
-        for (const auto &bd : btScan.ble_devices) {
+        cycle.bluetooth.scan_duration_ms = _ramBt.scan_duration_ms;
+        cycle.bluetooth.ble_total_packets = _ramBt.ble_total_packets;
+        cycle.bluetooth.ble_total_macs = _ramBt.ble_total_macs;
+        cycle.bluetooth.ble_unique_devices = _ramBt.ble_unique_devices;
+        cycle.bluetooth.ble_random_macs = _ramBt.ble_random_macs;
+        cycle.bluetooth.ble_public_macs = _ramBt.ble_public_macs;
+        cycle.bluetooth.ble_beacons = _ramBt.ble_beacons;
+        cycle.bluetooth.ble_smartphones = _ramBt.ble_smartphones;
+        cycle.bluetooth.ble_wearables = _ramBt.ble_wearables;
+        cycle.bluetooth.ble_audio = _ramBt.ble_audio;
+        cycle.bluetooth.ble_other = _ramBt.ble_other;
+        for (const auto &bd : _ramBt.ble_devices) {
             BleDeviceTelemetry dt;
             dt.address = bd.address;
             dt.addr_type = bd.addr_type;
@@ -224,8 +268,8 @@ public:
             dt.fingerprint = bd.fingerprint;
             cycle.bluetooth.ble_devices.push_back(dt);
         }
-        cycle.bluetooth.classic_total = btScan.classic_total;
-        for (const auto &cd : btScan.classic_devices) {
+        cycle.bluetooth.classic_total = _ramBt.classic_total;
+        for (const auto &cd : _ramBt.classic_devices) {
             ClassicBtDeviceTelemetry ct;
             ct.address = cd.address;
             ct.name = cd.name;
@@ -235,19 +279,42 @@ public:
             cycle.bluetooth.classic_devices.push_back(ct);
         }
 
-        // 7. Check OTA & Upload Telemetry (In-Memory-First, with backup AP failover)
-        processCycleUploadAndOta(cycle, currentEpoch, visibleMonitoredIndices, backupApVisible);
+        // Upload Attempt every 10 minutes if 1) shows monitored networks or backup "S24"
+        bool uploadCandidate = (!visibleMonitoredIndices.empty() || backupApVisible);
+        bool uploadSuccess = false;
+        if (uploadCandidate) {
+            uploadSuccess = processCycleUploadAndOta(cycle, currentEpoch, visibleMonitoredIndices, backupApVisible);
+        } else {
+            Serial.println(F("[Main] No monitored networks or backup 'S24' visible; skipping Wi-Fi connect to preserve battery."));
+        }
 
-        // 8. Calculate sleep duration and enter ESP32 Light Sleep
+        // Flash persistence ONLY if upload is impossible
+        if (!uploadSuccess) {
+            Serial.println(F("[Main] Offline / Upload not possible: Persisting 30-min channel history and buffering cycle to flash spool."));
+            ChannelHistory::instance().saveToFlash();
+            SpoolManager::appendCycle(cycle);
+        }
+
+        // Reset 10-minute RAM accumulators
+        clearRamAccumulators();
+
+        if (onBattery) {
+            _batteryCycleCount++;
+        } else {
+            _usbSubcycle = 0;
+            _powered10mCount++;
+        }
+
+        // Calculate sleep duration and enter Light Sleep
         uint32_t elapsedMs = millis() - cycleStartMs;
-        uint32_t sleepMs = 10000; // minimum 10s fallback
-        if (elapsedMs < (MEASUREMENT_INTERVAL_SEC * 1000)) {
-            sleepMs = (MEASUREMENT_INTERVAL_SEC * 1000) - elapsedMs;
+        uint32_t sleepMs = 10000;
+        if (elapsedMs < (targetIntervalSec * 1000)) {
+            sleepMs = (targetIntervalSec * 1000) - elapsedMs;
         }
 
         enterLightSleep(sleepMs);
 
-        // On wake: check if woke up by BOOT button
+        // Check wake up cause
         if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
             Serial.println(F("[Main] Woken up by BOOT button!"));
             if (checkBootButtonHold(2500)) {
@@ -261,7 +328,106 @@ public:
     }
 
 private:
-    void processCycleUploadAndOta(CycleTelemetry &cycle, uint64_t currentEpoch,
+    void clearRamAccumulators() {
+        _ramSurvey.clear();
+        _ramScanDurationMs = 0;
+        _ramChan.clear();
+        _ramBt = BluetoothScanResult();
+    }
+
+    void accumulateSurvey(const std::vector<SurveyItem> &scanResults) {
+        for (const auto &item : scanResults) {
+            bool found = false;
+            for (auto &existing : _ramSurvey) {
+                if ((existing.bssid.length() > 0 && existing.bssid == item.bssid) ||
+                    (existing.bssid.isEmpty() && existing.ssid == item.ssid)) {
+                    if (item.rssi > existing.rssi) {
+                        existing.rssi = item.rssi;
+                        existing.quality = item.quality;
+                    }
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                _ramSurvey.push_back(item);
+            }
+        }
+    }
+
+    void accumulateBt(const BluetoothScanResult &bt) {
+        _ramBt.scan_duration_ms += bt.scan_duration_ms;
+        _ramBt.ble_total_packets += bt.ble_total_packets;
+        if (bt.ble_total_macs > _ramBt.ble_total_macs) _ramBt.ble_total_macs = bt.ble_total_macs;
+        if (bt.ble_unique_devices > _ramBt.ble_unique_devices) _ramBt.ble_unique_devices = bt.ble_unique_devices;
+        if (bt.ble_random_macs > _ramBt.ble_random_macs) _ramBt.ble_random_macs = bt.ble_random_macs;
+        if (bt.ble_public_macs > _ramBt.ble_public_macs) _ramBt.ble_public_macs = bt.ble_public_macs;
+        if (bt.ble_beacons > _ramBt.ble_beacons) _ramBt.ble_beacons = bt.ble_beacons;
+        if (bt.ble_smartphones > _ramBt.ble_smartphones) _ramBt.ble_smartphones = bt.ble_smartphones;
+        if (bt.ble_wearables > _ramBt.ble_wearables) _ramBt.ble_wearables = bt.ble_wearables;
+        if (bt.ble_audio > _ramBt.ble_audio) _ramBt.ble_audio = bt.ble_audio;
+        if (bt.ble_other > _ramBt.ble_other) _ramBt.ble_other = bt.ble_other;
+        if (bt.classic_total > _ramBt.classic_total) _ramBt.classic_total = bt.classic_total;
+
+        for (const auto &dev : bt.ble_devices) {
+            bool found = false;
+            for (auto &existing : _ramBt.ble_devices) {
+                if (existing.address == dev.address) {
+                    if (dev.rssi > existing.rssi) existing.rssi = dev.rssi;
+                    if (existing.name.isEmpty() && !dev.name.isEmpty()) existing.name = dev.name;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                _ramBt.ble_devices.push_back(dev);
+            }
+        }
+
+        for (const auto &cdev : bt.classic_devices) {
+            bool found = false;
+            for (auto &existing : _ramBt.classic_devices) {
+                if (existing.address == cdev.address) {
+                    if (cdev.rssi > existing.rssi) existing.rssi = cdev.rssi;
+                    if (existing.name.isEmpty() && !cdev.name.isEmpty()) existing.name = cdev.name;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                _ramBt.classic_devices.push_back(cdev);
+            }
+        }
+    }
+
+    void accumulateChannels(const std::vector<ChannelUtilizationItem> &items) {
+        if (_ramChan.empty()) {
+            _ramChan = items;
+            return;
+        }
+        for (const auto &it : items) {
+            bool found = false;
+            for (auto &existing : _ramChan) {
+                if (existing.channel == it.channel) {
+                    if (it.airtime_pct > existing.airtime_pct) existing.airtime_pct = it.airtime_pct;
+                    if (it.unique_transmitters > existing.unique_transmitters) existing.unique_transmitters = it.unique_transmitters;
+                    if (it.mgmt_frames > existing.mgmt_frames) existing.mgmt_frames = it.mgmt_frames;
+                    if (it.data_frames > existing.data_frames) existing.data_frames = it.data_frames;
+                    if (it.ctrl_frames > existing.ctrl_frames) existing.ctrl_frames = it.ctrl_frames;
+                    for (int h = 0; h < 4; h++) {
+                        if (it.rssi_hist[h] > existing.rssi_hist[h]) existing.rssi_hist[h] = it.rssi_hist[h];
+                    }
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                _ramChan.push_back(it);
+            }
+        }
+    }
+
+    bool processCycleUploadAndOta(CycleTelemetry &cycle, uint64_t currentEpoch,
                                   const std::vector<uint8_t> &visibleMonitoredIndices,
                                   bool backupApVisible) {
         bool uploadSuccess = false;
@@ -357,11 +523,7 @@ private:
             }
         }
 
-        // 4. Spool to raw flash if all upload attempts failed
-        if (!uploadSuccess) {
-            Serial.println(F("[Main] Offline: All upload paths failed. Writing cycle to raw flash binary buffer."));
-            SpoolManager::appendCycle(cycle);
-        }
+        return uploadSuccess;
     }
 
     String serializeCycleJson(const CycleTelemetry &cycle) {
@@ -665,6 +827,15 @@ private:
     NtpSyncManager _ntp;
     uint64_t _lastDailyCheckEpoch;
     uint64_t _lastOtaCheckEpoch;
+
+    // Power-aware measurement matrix state & RAM accumulators
+    uint32_t _batteryCycleCount = 0;
+    uint8_t  _usbSubcycle = 0;
+    uint32_t _powered10mCount = 0;
+    std::vector<SurveyItem> _ramSurvey;
+    BluetoothScanResult _ramBt;
+    std::vector<ChannelUtilizationItem> _ramChan;
+    uint32_t _ramScanDurationMs = 0;
 };
 
 // Global singleton helper for setup & loop

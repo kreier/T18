@@ -55,6 +55,123 @@ export async function handleScheduledMaintenance(_event: ScheduledEvent, env: En
     console.error("[Cron] Error aggregating daily summaries:", err);
   }
 
+  // 1b. Aggregate yesterday's 48 30-minute intervals into daily_30min_summaries
+  try {
+    console.log(`[Cron] Aggregating 48 30-minute intervals for ${yesterdayStr}...`);
+    // Find all active stations from yesterday
+    const stationsResult = await env.DB.prepare(`
+      SELECT DISTINCT station_id FROM (
+        SELECT station_id FROM measurements WHERE timestamp >= ? AND timestamp < ?
+        UNION
+        SELECT station_id FROM station_channel_utilization WHERE timestamp >= ? AND timestamp < ?
+        UNION
+        SELECT station_id FROM station_bluetooth_summary WHERE timestamp >= ? AND timestamp < ?
+      )
+    `)
+    .bind(startOfYesterday, endOfYesterday, startOfYesterday, endOfYesterday, startOfYesterday, endOfYesterday)
+    .all<{ station_id: string }>();
+
+    const stationList = stationsResult.results || [];
+    for (const st of stationList) {
+      const stationId = st.station_id;
+
+      // Group channel max utilization by 30-minute slot
+      const chanRes = await env.DB.prepare(`
+        SELECT
+          CAST((timestamp - ?) / 1800 AS INTEGER) as slot_idx,
+          channel,
+          MAX(airtime_pct) as max_airtime
+        FROM station_channel_utilization
+        WHERE station_id = ? AND timestamp >= ? AND timestamp < ?
+        GROUP BY slot_idx, channel
+      `)
+      .bind(startOfYesterday, stationId, startOfYesterday, endOfYesterday)
+      .all<{ slot_idx: number; channel: number; max_airtime: number }>();
+
+      const chanBySlot: Record<number, number[]> = {};
+      for (const r of (chanRes.results || [])) {
+        if (!chanBySlot[r.slot_idx]) {
+          chanBySlot[r.slot_idx] = new Array(13).fill(0);
+        }
+        if (r.channel >= 1 && r.channel <= 13) {
+          chanBySlot[r.slot_idx][r.channel - 1] = r.max_airtime;
+        }
+      }
+
+      // Group bluetooth max unique BLE and Classic by 30-minute slot
+      const btRes = await env.DB.prepare(`
+        SELECT
+          CAST((timestamp - ?) / 1800 AS INTEGER) as slot_idx,
+          MAX(ble_unique_devices) as max_ble,
+          MAX(classic_total) as max_classic
+        FROM station_bluetooth_summary
+        WHERE station_id = ? AND timestamp >= ? AND timestamp < ?
+        GROUP BY slot_idx
+      `)
+      .bind(startOfYesterday, stationId, startOfYesterday, endOfYesterday)
+      .all<{ slot_idx: number; max_ble: number; max_classic: number }>();
+
+      const btBySlot: Record<number, { max_ble: number; max_classic: number }> = {};
+      for (const r of (btRes.results || [])) {
+        btBySlot[r.slot_idx] = { max_ble: r.max_ble ?? 0, max_classic: r.max_classic ?? 0 };
+      }
+
+      // Group battery voltage max by 30-minute slot
+      const batRes = await env.DB.prepare(`
+        SELECT
+          CAST((timestamp - ?) / 1800 AS INTEGER) as slot_idx,
+          MAX(battery_mv) as max_bat
+        FROM station_battery_history
+        WHERE station_id = ? AND timestamp >= ? AND timestamp < ?
+        GROUP BY slot_idx
+      `)
+      .bind(startOfYesterday, stationId, startOfYesterday, endOfYesterday)
+      .all<{ slot_idx: number; max_bat: number }>();
+
+      const batBySlot: Record<number, number> = {};
+      for (const r of (batRes.results || [])) {
+        batBySlot[r.slot_idx] = r.max_bat;
+      }
+
+      // Build 48 statements and batch insert
+      const stmts: D1PreparedStatement[] = [];
+      for (let slot = 0; slot < 48; slot++) {
+        const slotStartTs = startOfYesterday + (slot * 1800);
+        const chanArr = chanBySlot[slot] || new Array(13).fill(0);
+        const btData = btBySlot[slot] || { max_ble: 0, max_classic: 0 };
+        const batMv = batBySlot[slot] ?? null;
+
+        const hasData = chanBySlot[slot] || btBySlot[slot] || batBySlot[slot] !== undefined;
+        if (hasData) {
+          stmts.push(
+            env.DB.prepare(`
+              INSERT OR REPLACE INTO daily_30min_summaries (
+                station_id, date, interval_index, start_timestamp,
+                channel_max_airtime, ble_max_unique, classic_max, battery_mv
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `).bind(
+              stationId,
+              yesterdayStr,
+              slot,
+              slotStartTs,
+              JSON.stringify(chanArr),
+              btData.max_ble,
+              btData.max_classic,
+              batMv
+            )
+          );
+        }
+      }
+
+      if (stmts.length > 0) {
+        await env.DB.batch(stmts);
+      }
+    }
+    console.log(`[Cron] 48 30-minute intervals aggregated successfully for ${yesterdayStr}.`);
+  } catch (err) {
+    console.error("[Cron] Error aggregating 48 30-minute summaries:", err);
+  }
+
   // 2. Purge raw measurements and scan surveys older than 30 days
   const retentionCutoff = now - (30 * 86400);
   console.log(`[Cron] Purging raw records older than ${retentionCutoff} (30 days retention)...`);

@@ -1,16 +1,122 @@
-# kreier/T18
+# flynn0/T18
 
-[![Latest Release](https://img.shields.io/github/v/release/kreier/T18?color=blue&label=version)](https://github.com/kreier/T18/releases)
+[![Latest Release](https://img.shields.io/github/v/release/flynn0/T18?color=blue&label=version)](https://github.com/flynn0/T18/releases)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Cloudflare Worker](https://img.shields.io/badge/Cloudflare-t18.kreier.workers.dev-F38020?logo=cloudflare)](https://t18.kreier.workers.dev/)
-[![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-kreier.github.io%2FT18-22c55e?logo=github)](https://kreier.github.io/T18/)
+[![Cloudflare Worker](https://img.shields.io/badge/Cloudflare-t18.dhsp.workers.dev-F38020?logo=cloudflare)](https://t18.dhsp.workers.dev/)
+[![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-flynn0.github.io%2FT18-22c55e?logo=github)](https://flynn0.github.io/T18/)
 
 > Autonomous Wi-Fi Spectrum, Latency & Bluetooth Telemetry Fleet Node for ESP32 (LILYGO T18 & T8) with Cloudflare Worker, D1 SQLite Database, and GitHub Pages.
 
 **Live Telemetry Dashboards & Web Installer**:
-- 🌐 **Cloudflare Edge Dashboard**: [https://t18.kreier.workers.dev/](https://t18.kreier.workers.dev/)
-- 📄 **GitHub Pages Mirror**: [https://kreier.github.io/T18/](https://kreier.github.io/T18/)
-- ⚡ **In-Browser ESP32 Web Flasher**: [https://t18.kreier.workers.dev/?flash=1](https://t18.kreier.workers.dev/?flash=1) or [https://kreier.github.io/T18/?flash=1](https://kreier.github.io/T18/?flash=1)
+- 🌐 **Cloudflare Edge Dashboard**: [https://t18.dhsp.workers.dev/](https://t18.dhsp.workers.dev/)
+- 📄 **GitHub Pages Mirror**: [https://flynn0.github.io/T18/](https://flynn0.github.io/T18/)
+- ⚡ **In-Browser ESP32 Web Flasher**: [https://t18.dhsp.workers.dev/?flash=1](https://t18.dhsp.workers.dev/?flash=1) or [https://flynn0.github.io/T18/?flash=1](https://flynn0.github.io/T18/?flash=1)
+
+---
+
+## Architecture Overview
+
+```mermaid
+flowchart TD
+    subgraph EdgeNodes["Edge Fleet Nodes (ESP32 Microcontrollers)"]
+        subgraph HardwareProfiles["Hardware Targets"]
+            T18["LILYGO TTGO T18<br/>(IO5 LED, IO35 Battery Divider)"]
+            T8["LILYGO T8<br/>(IO21 LED, IO35 Battery Divider)"]
+            DevKit["ESP32 DevKit V1 / Custom<br/>(IO2 LED / Configurable)"]
+        end
+
+        subgraph CadenceManager["Adaptive Power Cadence & RAM Aggregation"]
+            PowerSense{"Battery Sensing (IO35)<br/>Vbat <= 4.2V ?"}
+            BatMode["Battery Cadence (10-min interval)<br/>• Wi-Fi Scan: Every 10m<br/>• BLE + Classic Scan: Every 10m<br/>• 13-Ch Airtime: Every 30m<br/>• Speed/Latency Probes: Every 30m"]
+            PwrMode["Powered Cadence (2-min interval)<br/>• Wi-Fi Scan: Every 2m (RAM Max)<br/>• BLE + Classic Scan: Every 2m (RAM Max)<br/>• 13-Ch Airtime: Every 2m (RAM Max)<br/>• Speed/Latency Probes: Every 10m"]
+            RAMBuffer["In-Memory RAM Accumulator<br/>(Max RSSI, Max Airtime %, Unique BT Devices)"]
+        end
+
+        subgraph StoragePipeline["Storage & Spooling Engine"]
+            ChanHistRAM["48-Slot 24h Revolving Buffer<br/>(In-Memory Channel & BT History)"]
+            FlashSpool["Offline SPI Flash Spool<br/>(Raw Circular Buffer, 190 KB)"]
+            FlashHist["Flash Channel History Sectors<br/>(Preserved only when offline)"]
+        end
+    end
+
+    subgraph RFEnvironment["Wireless Spectrum & Targets"]
+        APScan["2.4 GHz 802.11b/g/n Spectrum<br/>(Survey APs & BSSIDs)"]
+        AirtimeScan["13 Promiscuous Channels<br/>(Frame Counters & Contention %)"]
+        BTScan["Bluetooth Low Energy & Classic<br/>(RPA De-randomization & OUI / COD)"]
+        SpeedProbe["Target Network Gateways<br/>(DHCP, DNS IPv4/v6, HTTP Latencies)"]
+        BackupAP["Backup Uplink Hotspot<br/>('S24' / Emergency Access Point)"]
+    end
+
+    subgraph CloudflareEdge["Cloudflare Serverless Edge Infrastructure"]
+        WorkerRouter["Cloudflare Worker Router<br/>(https://t18.dhsp.workers.dev)"]
+        AuthIngest["Bearer Token & Zero-Trust Validation<br/>(/data, /register)"]
+        OTAService["OTA Firmware Streaming Proxy<br/>(/api/ota, /firmware/*)"]
+        CronJob["Daily Maintenance Cron (00:15 UTC)<br/>• 48-Interval 30-min Rollups<br/>• Change-Only Diagnostics History<br/>• 30-Day Purge & Rotation"]
+
+        subgraph D1Database["Cloudflare D1 SQLite Database (t18-mon-db)"]
+            T_Meas["measurements & daily_summaries"]
+            T_30Min["daily_30min_summaries (48 slots/day)"]
+            T_Chan["station_channel_utilization"]
+            T_BT["station_bluetooth_summary & latest"]
+            T_Diag["station_network_diagnostics<br/>& diagnostics_history (Change-only)"]
+            T_Bat["station_battery_history"]
+        end
+    end
+
+    subgraph FrontendClients["Dual Dashboards & Management Tools"]
+        WorkerUI["Server-Rendered Dashboard<br/>(Cloudflare Worker SSR)"]
+        PagesUI["Static Dashboard Mirror<br/>(GitHub Pages: flynn0.github.io/T18)"]
+        WebFlasher["Web Serial Browser Flasher<br/>(ESP Web Tools Zero-Install)"]
+    end
+
+    %% Edge node data flows
+    HardwareProfiles --> PowerSense
+    PowerSense -->|Battery <= 4.2V| BatMode
+    PowerSense -->|USB / AC > 4.2V| PwrMode
+    BatMode --> RAMBuffer
+    PwrMode --> RAMBuffer
+
+    RAMBuffer --> APScan
+    RAMBuffer --> AirtimeScan
+    RAMBuffer --> BTScan
+    RAMBuffer --> SpeedProbe
+
+    SpeedProbe -.->|Probe only if visible| APScan
+
+    RAMBuffer --> ChanHistRAM
+
+    ChanHistRAM -->|Online Direct RAM Stream| WorkerRouter
+    ChanHistRAM -->|Upload Failed / Offline| FlashHist
+    RAMBuffer -->|Upload Failed / Offline| FlashSpool
+
+    BackupAP -.->|Failover Uplink| WorkerRouter
+
+    %% Worker backend flows
+    WorkerRouter --> AuthIngest
+    WorkerRouter --> OTAService
+    AuthIngest --> D1Database
+    CronJob --> D1Database
+
+    %% Frontend client flows
+    D1Database --> WorkerUI
+    D1Database --> PagesUI
+    OTAService --> WebFlasher
+```
+
+---
+
+## Power-Aware Measurement Cadence Matrix
+
+To maximize battery runtime on single-cell 18650 LiPo cells while delivering high-resolution spectrum telemetry, the firmware dynamically selects measurement cadences based on voltage sensed on **IO35**:
+
+| Measurement Task | Battery Powered ($\le 4.20\text{ V}$) | USB / AC Powered ($> 4.20\text{ V}$ / No Bat) | RAM Storage & Rollup Invariant |
+| :--- | :---: | :---: | :--- |
+| **1) Wi-Fi Spectrum Scan** | Every 10 minutes | Every 2 minutes | Peak RSSI & quality accumulated in RAM per 10m window |
+| **2) BLE & Classic Bluetooth Scan** | Every 10 minutes | Every 2 minutes | Max unique BLE & Classic BT devices accumulated in RAM |
+| **3) 13-Channel Airtime Utilization** | Every 30 minutes | Every 2 minutes | Max airtime % across 13 channels accumulated in RAM |
+| **4) Station Speed & Latency Probes** | Every 30 minutes *(Visible APs Only)* | Every 10 minutes *(Visible APs Only)* | Gateway, DHCP, DNS, and HTTP latency probes |
+| **Telemetry Upload Attempt** | Every 10 minutes *(If AP or S24 visible)* | Every 10 minutes *(If AP or S24 visible)* | Directly transmitted from RAM (Zero flash wear when online) |
+| **Flash Persistence** | Offline only (30-min buffer + spool) | Offline only (30-min buffer + spool) | No flash writes when telemetry upload succeeds |
 
 ---
 
@@ -25,8 +131,8 @@
   - **LILYGO T18**: Status LED on **GPIO 5**, battery ADC on **GPIO 35** via 100kΩ/100kΩ divider (ratio 0.50, $V_{\text{bat}} = 2.0 \times V_{\text{pin}}$).
   - **LILYGO T8**: Status LED on **GPIO 21**, battery ADC on **GPIO 35** via 100kΩ/100kΩ divider.
   - **ESP32 DevKit V1**: Status LED on **GPIO 2**, battery monitoring disabled.
-- **2.4 GHz Bluetooth Low Energy (BLE) & Classic Spectrum Survey**:
-  Sequential dual-stack Bluetooth scans during every cycle. Employs advanced advertising payload de-randomization (Apple Find My/AirTag, iBeacon, Eddystone, Tile, Samsung/Google continuity) to track true physical device presence and RF contention without MAC address inflation.
+- **2.4 GHz Bluetooth Low Energy (BLE) Spectrum Survey**:
+  Sequential Bluetooth Low Energy (BLE) scans during every cycle. Employs advanced advertising payload de-randomization (Apple Find My/AirTag, iBeacon, Eddystone, Tile, Samsung/Google continuity) to track true physical device presence and RF contention without MAC address inflation, with unique BLE counts persisted directly into 24-hour local flash storage.
 - **Promiscuous Mode Channel Contention Profiling & LED Feedback**:
   Measures all 13 channels during boot/wake with dwell times using ESP-IDF promiscuous mode. Provides dynamic LED feedback (solid during channel dwell, 100 ms off during transition) and non-blocking BOOT button monitoring to enter the setup portal immediately.
 - **Backup Hotspot Internet Failover**:
@@ -61,8 +167,8 @@
 Flash pre-compiled universal firmware directly to any ESP32 board over USB using your web browser:
 
 1. **Open the Web Flasher**:
-   - 🌐 [https://t18.kreier.workers.dev/?flash=1](https://t18.kreier.workers.dev/?flash=1) (Cloudflare Edge)
-   - 📄 [https://kreier.github.io/T18/?flash=1](https://kreier.github.io/T18/?flash=1) (GitHub Pages Mirror)
+   - 🌐 [https://t18.dhsp.workers.dev/?flash=1](https://t18.dhsp.workers.dev/?flash=1) (Cloudflare Edge)
+   - 📄 [https://flynn0.github.io/T18/?flash=1](https://flynn0.github.io/T18/?flash=1) (GitHub Pages Mirror)
    - Or click **⚡ Flash Device** in the top navigation header of any dashboard view.
 2. **Connect your ESP32** via a USB data cable to your desktop computer.
 3. Supported browsers: **Google Chrome**, **Microsoft Edge**, **Brave**, or **Opera** on desktop (requires Web Serial API over HTTPS).
@@ -75,7 +181,7 @@ Flash pre-compiled universal firmware directly to any ESP32 board over USB using
 ---
 
 ### Option B: Pre-Compiled Binary Flashing (`esptool.py`)
-If you prefer command-line flashing without compiling from source, download the compiled binaries from the Web Flasher dialog or [GitHub Releases](https://github.com/kreier/T18/releases/latest):
+If you prefer command-line flashing without compiling from source, download the compiled binaries from the Web Flasher dialog or [GitHub Releases](https://github.com/flynn0/T18/releases/latest):
 
 - `firmware.bin` (Application — offset `0x10000`)
 - `partitions.bin` (Partition Table — offset `0x8000`)
@@ -125,8 +231,8 @@ pio device monitor -b 115200
 ## Cloudflare Worker & D1 Setup
 
 ### 1. Worker Configuration
-- **Worker Name**: `t18` (accessible at `https://t18.kreier.workers.dev`)
-- **D1 Database**: `t18-mon-db` (`ded19daf-64c6-4f58-bda8-1ffa02ba99f1`)
+- **Worker Name**: `t18` (accessible at `https://t18.dhsp.workers.dev`)
+- **D1 Database**: `t18-mon-db` (`9526b47c-4fa7-41cc-8cc5-ba5b2bd8cf4f`)
 
 ### 2. Deploy Worker & Apply Migrations
 ```bash

@@ -1,9 +1,57 @@
 # Changelog
 
-All notable changes to the `kreier/T18` platform will be documented in this file.
+All notable changes to the `flynn0/T18` platform will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## [1.1.0] - 2026-11-17
+
+### Added
+- **Power-Aware Adaptive Measurement Matrix**:
+  - Senses operating power supply via ADC voltage on IO35 ($V_{\text{bat}} = 2.0 \times V_{\text{pin}}$).
+  - **Battery Mode** ($\le 4.20\text{ V}$): Wi-Fi scan and BLE + Classic BT scan every 10 minutes; 13-channel promiscuous congestion survey and station speed/latency probes every 30 minutes; non-existent networks are omitted from connection attempts to avoid timeout penalties.
+  - **Powered Mode** ($> 4.20\text{ V}$ / USB / no battery): 2-minute cycle cadence running Wi-Fi scan, BLE + Classic scan, and 13-channel survey, accumulating peak maximums in RAM over 10-minute intervals before testing latency and uploading telemetry.
+- **Zero-Flash-Wear Invariant When Online**:
+  - Telemetry is transmitted directly from RAM over HTTP; zero bytes written to flash when upload succeeds every 10 minutes.
+  - Offline buffering safely engages only when upload fails or no networks are visible: commits 48-slot (24-hour) 30-minute buffer (`ChannelHistory`) and binary records to raw circular flash spool (`SpoolManager`).
+  - Automatic backlog drainage and spool clearing upon network reconnection.
+- **D1 Daily 30-Minute Summaries (Migration 0011)**:
+  - Added `daily_30min_summaries` table storing 48 half-hour intervals of the previous UTC day aggregated by daily cron trigger at 00:15 UTC (max 13-channel airtime utilization array, max unique BLE devices, max Classic BT devices, and battery voltage).
+- **Change-Only Network Environment & Firewall Diagnostics History**:
+  - Added `station_network_diagnostics_history` table recording long-term audit snapshots once on initial detection and only appending records when gateway or firewall configuration changes, strictly ignoring `dns_ipv4_ms` and `dns_ipv6_ms` response time jitter.
+- **Architecture Overview & ADR 0008**:
+  - Added comprehensive multi-tier Mermaid architecture diagram in `README.md`.
+  - Documented ADR 0008 detailing power-aware measurement matrix, 30-minute rollups, and zero-flash-wear invariants.
+
+### Changed
+- **Web UI Enhancements**:
+  - 24-Hour Spectrum & BLE Heatmap drawer is expanded by default.
+  - Battery voltage and discharge profile graph is expanded by default when battery telemetry is detected.
+  - Removed "Previous 24 Hours" button/list from the Bluetooth table in favor of real-time cycle inspection.
+  - Added live KPI breakdown badges for Key Vendors (Apple, Microsoft, Samsung) and Categories (Smartphone, Computer, Beacon).
+  - Repaired footer styling, centered layout, and font inheritance broken by dangling CSS syntax.
+
+---
+
+## [1.0.4] - 2026-11-17
+
+### Changed
+- **Main Repository & Domain Migration to flynn0**:
+  - Re-anchored primary repository to `flynn0/T18`.
+  - Updated Cloudflare Worker host to `https://t18.dhsp.workers.dev` and static mirror to `https://flynn0.github.io/T18`.
+  - Updated default worker URL and preset domain for authentication in firmware to `https://t18.dhsp.workers.dev`.
+  - Added automatic NVS migration detecting legacy `*.kreier.workers.dev` configurations and resetting device tokens for clean re-authentication with `t18.dhsp.workers.dev`.
+- **Bluetooth Scan Optimization**:
+  - Removed legacy Bluetooth Classic inquiry and `BluetoothSerial` dependency from `BluetoothScanner`, significantly reducing firmware binary footprint and execution latency.
+  - Scan focuses entirely on 2.4 GHz Bluetooth Low Energy (BLE) with de-randomization and categorization.
+
+### Added
+- **24-Hour Unique BLE Device Local Flash Storage**:
+  - Extended `ChannelHistoryManager` (`ChannelSlotRecord` v2) to store and average unique BLE device counts across each of the 48 half-hour slots (24 hours total).
+  - Synchronizes offline BLE unique device count alongside 13-channel utilization metrics directly to the worker backend upon network reconnection.
 
 ---
 

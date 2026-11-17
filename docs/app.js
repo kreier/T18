@@ -105,7 +105,7 @@ async function loadStations() {
 
   // Also query live endpoint from Cloudflare Worker to show newly registered stations and fresh telemetry immediately
   try {
-    const liveRes = await fetch('https://t18-telemetry-worker.kreier.workers.dev/live', { cache: 'no-store' });
+    const liveRes = await fetch('https://t18.dhsp.workers.dev/live', { cache: 'no-store' });
     if (liveRes.ok) {
       const liveData = await liveRes.json();
       if (liveData && typeof liveData === 'object') {

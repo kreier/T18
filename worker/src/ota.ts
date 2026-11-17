@@ -67,7 +67,7 @@ export async function handleOta(request: Request, env: Env): Promise<Response> {
       );
     }
     // Otherwise use stable production version (fleet default)
-    targetVersion = env.STABLE_VERSION || "1.0.3";
+    targetVersion = env.STABLE_VERSION || "1.1.0";
 
     // For fleet updates, never downgrade a device running an equal or newer version
     if (compareSemVer(targetVersion, currentVersion) <= 0) {
@@ -136,7 +136,7 @@ export async function handleOta(request: Request, env: Env): Promise<Response> {
 
 // Handles binary delivery with Cloudflare R2 as primary and GitHub Releases / Pages as backup
 export async function handleFirmwareDownload(filename: string, request: Request, env: Env): Promise<Response> {
-  const stableTag = `v${env.STABLE_VERSION || "1.0.3"}`;
+  const stableTag = `v${env.STABLE_VERSION || "1.1.0"}`;
 
   // 1. Try Cloudflare R2 Storage (Zero egress fees, high speed)
   if (env.OTA_BUCKET) {
@@ -177,13 +177,13 @@ export async function handleFirmwareDownload(filename: string, request: Request,
     releaseFilename = `firmware-esp32-merged-${tag}.bin`;
   }
 
-  const githubUrl = `https://github.com/kreier/T18/releases/download/${tag}/${releaseFilename}`;
+  const githubUrl = `https://github.com/flynn0/T18/releases/download/${tag}/${releaseFilename}`;
   console.log(`[OTA] Fetching firmware binary for ${filename} (${releaseFilename}) from GitHub Releases: ${githubUrl}`);
 
   try {
     const ghResponse = await fetch(githubUrl, {
       redirect: "follow",
-      headers: { "User-Agent": "kreier-t18-worker" }
+      headers: { "User-Agent": "flynn0-t18-worker" }
     });
 
     if (ghResponse.ok && ghResponse.body) {
@@ -207,11 +207,11 @@ export async function handleFirmwareDownload(filename: string, request: Request,
   }
 
   // 3. GitHub Pages static fallback (e.g. for boot_app0.bin, partitions.bin, etc.)
-  const pagesUrl = `https://kreier.github.io/T18/firmware/${filename}`;
+  const pagesUrl = `https://flynn0.github.io/T18/firmware/${filename}`;
   try {
     const pagesResponse = await fetch(pagesUrl, {
       redirect: "follow",
-      headers: { "User-Agent": "kreier-t18-worker" }
+      headers: { "User-Agent": "flynn0-t18-worker" }
     });
 
     if (pagesResponse.ok && pagesResponse.body) {
