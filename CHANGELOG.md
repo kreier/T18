@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.3] - 2026-11-18
+
+### Added
+- **24-Hour Station Reliability Timeline (48 × 30-Minute Interval Bar)**:
+  - Added a 48-cell interactive reliability matrix directly inside each network card below the HTTP probe latencies.
+  - Granular color-coded failure classification:
+    - 🟢 Green: 100% probes and connectivity healthy.
+    - 🟣 Purple: One or more HTTP probe endpoints timed out.
+    - 🟡 Amber: DNS IPv4 or IPv6 resolution timed out.
+    - 🟠 Orange: Gateway ICMP/TCP round-trip timed out.
+    - 🔴 Red: DHCP lease acquisition timed out.
+    - ⚫ Charcoal: Association timeout / failure.
+    - ⚪ Muted Gray: Idle period with no measurement recorded.
+  - Interactive hover tooltips displaying 30-minute time intervals, relative elapsed time, and detailed error summaries.
+- **Collapsible Scan Surveys**:
+  - Made "Surrounding 2.4 GHz Spectrum Survey" and "Previously Detected Networks" collapsible with click-to-expand headers, collapsed by default for a clean, streamlined dashboard.
+
+### Fixed & Improved
+- **Restored 24-Hour Spectrum & BLE Heatmap Geometry**:
+  - Isolated the Settings Year Activity Heatmap styles (`.cal-*`), completely resolving a CSS selector conflict that inadvertently reduced the 24-hour spectrum heatmap cells from 18px height and added horizontal borders.
+- **Calendar Heatmap Layout & Legend Refinements**:
+  - Widened the Settings & Fleet Management dialog to 1040px to eliminate horizontal scrollbars on 52-week activity views.
+  - Transformed legend indicators into strict squares.
+  - Replaced generic "Less / More" labels with dynamic dataset-driven indicators (`0 cycles / day` to `${max} cycles / day (peak)`).
+- **Target Stations Cleanup Selection Integrity**:
+  - Fixed station dropdown population logic in Settings to dynamically refresh on every overview reload, properly reflecting real-time database state and preventing decommissioned stations from lingering in options.
+
+---
+
+## [1.1.2] - 2026-11-18
+
+### Fixed
+- **Subcycle Heap Fragmentation & Bluetooth Map Node Exhaustion**:
+  - Replaced dynamic associative containers (`std::map<String, BleDeviceRecord>` and `std::set<String>`) in `BluetoothScanner::scanBle` with linear deduplication in `std::vector` and 64-bit integer MAC hashing, eliminating >600 heap allocations and RB-tree node fragmentation per scan.
+  - Capped maximum unique tracked BLE devices in scan phase to 25 records.
+  - Capped RAM accumulation across 2-minute subcycles in powered mode: `_ramSurvey` strictly capped at 60 APs, `_ramBt.ble_devices` capped at 15, and `_ramBt.classic_devices` capped at 10.
+  - Explicitly scoped Wi-Fi scan results vector in `app_main.h` so 50+ SurveyItems are deallocated from stack/heap before `BluetoothScanner::performScan` starts.
+  - Added `shrink_to_fit()` on RAM accumulators upon 10-minute cycle reset.
+
+---
+
+## [1.1.1] - 2026-11-18
+
+### Fixed
+- **Bluetooth Scan Heap Exhaustion & OOM Panic**:
+  - Fixed an out-of-memory crash (`abort() was called at PC 0x40201c97 on core 0`) caused by simultaneously running the Wi-Fi station stack and the Bluedroid BLE/Classic Bluetooth stack during congested scans.
+  - Automatically turns off the Wi-Fi radio (`WiFi.mode(WIFI_OFF)`) and deletes scan cache immediately after the Wi-Fi spectrum scan completes, reclaiming >40 KB of internal DRAM for the Bluetooth stack.
+  - Added defensive free heap threshold guards in `BluetoothScanner::scanBle` (min 40 KB) and `BluetoothScanner::scanClassic` (min 35 KB) to prevent fatal `std::bad_alloc` aborts in crowded RF environments.
+  - Added detailed free heap diagnostics logging before and after Bluetooth execution.
+
+---
+
 ## [1.1.0] - 2026-11-17
 
 ### Added

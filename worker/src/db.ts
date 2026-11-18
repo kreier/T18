@@ -952,4 +952,207 @@ export class Database {
       return Array.from(seenMap.values());
     }
   }
+
+  // ==========================================
+  // Fleet Admin & Settings Methods
+  // ==========================================
+
+  async getTableStats(): Promise<Array<{ table: string; count: number; bytes_estimate: number; description: string }>> {
+    const tableMeta = [
+      { table: "measurements", avgBytes: 250, desc: "Raw Wi-Fi station connectivity & latency tests" },
+      { table: "station_discovered_aps", avgBytes: 130, desc: "2.4 GHz spectrum AP scan observations & RSSI" },
+      { table: "station_bluetooth_summary", avgBytes: 200, desc: "BLE & Classic Bluetooth scans & category KPIs" },
+      { table: "daily_30min_summaries", avgBytes: 180, desc: "30-min aggregated channel congestion & RF summaries" },
+      { table: "daily_summaries", avgBytes: 420, desc: "24-hour UTC daily rollups" },
+      { table: "station_battery_history", avgBytes: 48, desc: "ADC battery voltage & power mode history" },
+      { table: "station_network_diagnostics_history", avgBytes: 650, desc: "Firewall & network configuration changes" },
+      { table: "station_overview_cache", avgBytes: 2100, desc: "Level 2 fast snapshot cache for UI dashboards" },
+      { table: "station_channel_utilization", avgBytes: 200, desc: "13-channel airtime utilization records" },
+      { table: "station_network_diagnostics", avgBytes: 400, desc: "Latest network diagnostics snapshot" },
+      { table: "station_latest_measurements", avgBytes: 250, desc: "Latest measurement snapshot per network" },
+      { table: "station_latest_bluetooth", avgBytes: 300, desc: "Latest Bluetooth scan snapshot per station" },
+      { table: "stations", avgBytes: 350, desc: "Fleet registered edge devices & tokens" },
+    ];
+
+    const statements = tableMeta.map(t => 
+      this.db.prepare(`SELECT count(*) as cnt FROM ${t.table}`)
+    );
+
+    const results = await this.db.batch(statements);
+    return tableMeta.map((t, idx) => {
+      const count = (results[idx].results?.[0] as any)?.cnt ?? 0;
+      return {
+        table: t.table,
+        count: count,
+        bytes_estimate: count * t.avgBytes,
+        description: t.desc
+      };
+    });
+  }
+
+  async getStationStats(): Promise<Array<any>> {
+    const stations = await this.db
+      .prepare("SELECT * FROM stations ORDER BY last_seen DESC")
+      .all<StationRecord>();
+
+    const timeframeQuery = await this.db
+      .prepare(`
+        SELECT 
+          station_id, 
+          MIN(timestamp) as min_ts, 
+          MAX(timestamp) as max_ts, 
+          COUNT(*) as measurement_count 
+        FROM measurements 
+        GROUP BY station_id
+      `)
+      .all<{ station_id: string; min_ts: number; max_ts: number; measurement_count: number }>();
+
+    const registeredMap = new Map((stations.results || []).map(r => [r.station_id, r]));
+    const timeframes = new Map((timeframeQuery.results || []).map(r => [r.station_id, r]));
+
+    const result = (stations.results || []).map(st => {
+      const tf = timeframes.get(st.station_id);
+      return {
+        ...st,
+        min_timestamp: tf?.min_ts ?? null,
+        max_timestamp: tf?.max_ts ?? null,
+        measurement_count: tf?.measurement_count ?? 0
+      };
+    });
+
+    for (const [stId, tf] of timeframes) {
+      if (!registeredMap.has(stId)) {
+        result.push({
+          station_id: stId,
+          description: "(Decommissioned Data)",
+          device_token: "",
+          created_at: tf.min_ts,
+          last_seen: tf.max_ts,
+          firmware_version: "--",
+          target_version: null,
+          board_type: "Unknown",
+          battery_mv: null,
+          is_canary: 0,
+          ota_url: null,
+          min_timestamp: tf.min_ts,
+          max_timestamp: tf.max_ts,
+          measurement_count: tf.measurement_count
+        });
+      }
+    }
+
+    return result;
+  }
+
+  async getYearlyActivity(year: number, stationId?: string | null): Promise<Array<{ day: string; count: number }>> {
+    const startTs = Math.floor(new Date(year, 0, 1).getTime() / 1000);
+    const endTs = Math.floor(new Date(year + 1, 0, 1).getTime() / 1000);
+
+    let query = `
+      SELECT 
+        strftime('%Y-%m-%d', datetime(timestamp, 'unixepoch')) as day, 
+        count(*) as count 
+      FROM measurements 
+      WHERE timestamp >= ? AND timestamp < ?
+    `;
+    const params: any[] = [startTs, endTs];
+
+    if (stationId && stationId.trim() !== "" && stationId !== "all") {
+      query += " AND station_id = ?";
+      params.push(stationId);
+    }
+
+    query += " GROUP BY day ORDER BY day ASC";
+
+    const results = await this.db.prepare(query).bind(...params).all<{ day: string; count: number }>();
+    return results.results || [];
+  }
+
+  async updateStationSettings(
+    stationId: string,
+    description: string,
+    isCanary: number,
+    targetVersion: string | null
+  ): Promise<void> {
+    await this.db
+      .prepare(`
+        UPDATE stations SET
+          description = ?,
+          is_canary = ?,
+          target_version = ?
+        WHERE station_id = ?
+      `)
+      .bind(description, isCanary, targetVersion || null, stationId)
+      .run();
+    await this.invalidateOverviewCache(stationId);
+  }
+
+  async deleteStation(stationId: string, purgeData: boolean = true): Promise<void> {
+    if (!stationId) return;
+
+    if (purgeData) {
+      const stmts = [
+        this.db.prepare("DELETE FROM stations WHERE station_id = ?").bind(stationId),
+        this.db.prepare("DELETE FROM measurements WHERE station_id = ?").bind(stationId),
+        this.db.prepare("DELETE FROM station_latest_measurements WHERE station_id = ?").bind(stationId),
+        this.db.prepare("DELETE FROM station_latest_scan WHERE station_id = ?").bind(stationId),
+        this.db.prepare("DELETE FROM station_discovered_aps WHERE station_id = ?").bind(stationId),
+        this.db.prepare("DELETE FROM station_channel_utilization WHERE station_id = ?").bind(stationId),
+        this.db.prepare("DELETE FROM station_network_diagnostics WHERE station_id = ?").bind(stationId),
+        this.db.prepare("DELETE FROM station_network_diagnostics_history WHERE station_id = ?").bind(stationId),
+        this.db.prepare("DELETE FROM station_battery_history WHERE station_id = ?").bind(stationId),
+        this.db.prepare("DELETE FROM station_bluetooth_summary WHERE station_id = ?").bind(stationId),
+        this.db.prepare("DELETE FROM station_latest_bluetooth WHERE station_id = ?").bind(stationId),
+        this.db.prepare("DELETE FROM daily_summaries WHERE station_id = ?").bind(stationId),
+        this.db.prepare("DELETE FROM daily_30min_summaries WHERE station_id = ?").bind(stationId),
+        this.db.prepare("DELETE FROM station_overview_cache WHERE station_id = ?").bind(stationId)
+      ];
+      await this.db.batch(stmts);
+    } else {
+      await this.db.prepare("DELETE FROM stations WHERE station_id = ?").bind(stationId).run();
+    }
+    await this.invalidateOverviewCache(stationId);
+  }
+
+  async deleteMeasurementsByTimeframe(
+    stationId: string | null,
+    fromTs: number,
+    toTs: number
+  ): Promise<{ deletedMeasurements: number; deletedAps: number; deletedBt: number; deletedChannels: number; deletedBattery: number }> {
+    let measQuery = "DELETE FROM measurements WHERE timestamp >= ? AND timestamp <= ?";
+    let apsQuery = "DELETE FROM station_discovered_aps WHERE last_seen >= ? AND last_seen <= ?";
+    let btQuery = "DELETE FROM station_bluetooth_summary WHERE timestamp >= ? AND timestamp <= ?";
+    let chQuery = "DELETE FROM station_channel_utilization WHERE timestamp >= ? AND timestamp <= ?";
+    let batQuery = "DELETE FROM station_battery_history WHERE timestamp >= ? AND timestamp <= ?";
+    const params: any[] = [fromTs, toTs];
+
+    if (stationId && stationId.trim() !== "" && stationId !== "all") {
+      measQuery += " AND station_id = ?";
+      apsQuery += " AND station_id = ?";
+      btQuery += " AND station_id = ?";
+      chQuery += " AND station_id = ?";
+      batQuery += " AND station_id = ?";
+      params.push(stationId);
+    }
+
+    const r1 = await this.db.prepare(measQuery).bind(...params).run();
+    const r2 = await this.db.prepare(apsQuery).bind(...params).run();
+    const r3 = await this.db.prepare(btQuery).bind(...params).run();
+    const r4 = await this.db.prepare(chQuery).bind(...params).run();
+    const r5 = await this.db.prepare(batQuery).bind(...params).run();
+
+    if (stationId && stationId !== "all") {
+      await this.invalidateOverviewCache(stationId);
+    } else {
+      await this.db.prepare("DELETE FROM station_overview_cache").run();
+    }
+
+    return {
+      deletedMeasurements: r1.meta?.changes ?? 0,
+      deletedAps: r2.meta?.changes ?? 0,
+      deletedBt: r3.meta?.changes ?? 0,
+      deletedChannels: r4.meta?.changes ?? 0,
+      deletedBattery: r5.meta?.changes ?? 0
+    };
+  }
 }

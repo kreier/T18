@@ -4,6 +4,8 @@ export interface Env {
   ENVIRONMENT?: string;
   STABLE_VERSION?: string;
   OTA_BUCKET?: R2Bucket;
+  ADMIN_USERNAME?: string;
+  ADMIN_PASSWORD?: string;
 }
 
 export interface StationRecord {

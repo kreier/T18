@@ -2,8 +2,7 @@
 
 #include <Arduino.h>
 #include <vector>
-#include <set>
-#include <map>
+#include <algorithm>
 #include <BLEDevice.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
@@ -55,7 +54,13 @@ public:
     static BluetoothScanResult performScan(uint32_t bleDurationSec = 3, uint32_t classicDurationMs = 2000) {
         BluetoothScanResult result;
         uint32_t startMs = millis();
-        Serial.println(F("[Bluetooth] Initiating 2.4 GHz BLE and Classic Bluetooth Spectrum Scan..."));
+
+        // Ensure Wi-Fi radio is off to maximize available DRAM for Bluedroid stack
+        WiFi.mode(WIFI_OFF);
+        delay(30);
+
+        Serial.printf("[Bluetooth] Initiating 2.4 GHz BLE and Classic Bluetooth Spectrum Scan (Free Heap: %u bytes)...\n",
+                      (unsigned)ESP.getFreeHeap());
 
         // 1. BLE Scan Phase
         scanBle(result, bleDurationSec);
@@ -64,11 +69,11 @@ public:
         scanClassic(result, classicDurationMs);
 
         result.scan_duration_ms = millis() - startMs;
-        Serial.printf("[Bluetooth] Complete in %lu ms: BLE %lu packets, %u MACs, %u unique devices (Random: %u, Public: %u); Classic: %u devices.\n",
+        Serial.printf("[Bluetooth] Complete in %lu ms: BLE %lu packets, %u MACs, %u unique devices (Random: %u, Public: %u); Classic: %u devices. Remaining Heap: %u bytes.\n",
                       (unsigned long)result.scan_duration_ms, (unsigned long)result.ble_total_packets,
                       (unsigned)result.ble_total_macs, (unsigned)result.ble_unique_devices,
                       (unsigned)result.ble_random_macs, (unsigned)result.ble_public_macs,
-                      (unsigned)result.classic_total);
+                      (unsigned)result.classic_total, (unsigned)ESP.getFreeHeap());
         return result;
     }
 
@@ -121,8 +126,19 @@ public:
 
 private:
     static void scanBle(BluetoothScanResult &result, uint32_t durationSec) {
+        if (ESP.getFreeHeap() < 40000) {
+            Serial.printf("[Bluetooth] Warning: Low heap (%u bytes), skipping BLE scan to prevent crash.\n",
+                          (unsigned)ESP.getFreeHeap());
+            return;
+        }
+
         BLEDevice::init("WIFI-Mon");
         BLEScan* pBLEScan = BLEDevice::getScan();
+        if (!pBLEScan) {
+            Serial.println(F("[Bluetooth] Warning: Failed to obtain BLEScan instance."));
+            BLEDevice::deinit(false);
+            return;
+        }
         pBLEScan->setActiveScan(true);
         pBLEScan->setInterval(100);
         pBLEScan->setWindow(99);
@@ -136,21 +152,29 @@ private:
         int count = pResults->getCount();
         result.ble_total_packets = count;
 
-        std::set<String> observedMacs;
-        std::map<String, BleDeviceRecord> uniqueDevices;
+        std::vector<uint64_t> observedMacs;
+        observedMacs.reserve(64);
+        std::vector<BleDeviceRecord> uniqueDevices;
+        uniqueDevices.reserve(25);
 
         for (int i = 0; i < count; i++) {
             BLEAdvertisedDevice dev = pResults->getDevice(i);
-            String addrStr = dev.getAddress().toString().c_str();
-            addrStr.toUpperCase();
-            observedMacs.insert(addrStr);
+
+            // Record MAC address as 64-bit integer (zero heap allocation)
+            uint8_t* nativeAddr = dev.getAddress().getNative();
+            if (nativeAddr) {
+                uint64_t macKey = 0;
+                for (int b = 0; b < 6; b++) macKey = (macKey << 8) | nativeAddr[b];
+                bool macSeen = false;
+                for (uint64_t m : observedMacs) {
+                    if (m == macKey) { macSeen = true; break; }
+                }
+                if (!macSeen) observedMacs.push_back(macKey);
+            }
 
             // Determine address type
             uint8_t addrType = dev.getAddressType();
-            uint8_t topByte = 0;
-            if (addrStr.length() >= 2) {
-                topByte = (uint8_t)strtol(addrStr.substring(0, 2).c_str(), NULL, 16);
-            }
+            uint8_t topByte = nativeAddr ? nativeAddr[0] : 0;
 
             String addrTypeStr = "public";
             if (addrType != 0) {
@@ -193,24 +217,22 @@ private:
                 }
             }
 
+            String addrStr = dev.getAddress().toString().c_str();
+            addrStr.toUpperCase();
+
             // Build deduplication fingerprint
             String fp;
             if (addrTypeStr == "public") {
-                // Public MAC is globally unique hardware identity
                 fp = "PUB:" + addrStr;
             } else if (!beaconId.isEmpty()) {
-                // High-confidence beacon / tag ID
                 fp = "BEACON:" + beaconId;
             } else if (!devName.isEmpty()) {
-                // Named device with vendor & services
                 fp = "NAME:" + devName + ":" + String(companyId, HEX) + ":" + String(primaryServiceUuid, HEX);
             } else if (companyId != 0) {
-                // Randomized RPA with manufacturer payload: cluster by company, sub-type, services, and RSSI zone
-                int rssiZone = (rssi + 120) / 18; // ~18 dBm spatial window
+                int rssiZone = (rssi + 120) / 18;
                 fp = "RPA:" + String(companyId, HEX) + ":" + String(mfrSubType, HEX) + ":" +
                      String(primaryServiceUuid, HEX) + ":Z" + String(rssiZone);
             } else {
-                // Ephemeral randomized address without payload
                 fp = "RAND:" + addrStr;
             }
 
@@ -223,9 +245,19 @@ private:
             rec.rssi = rssi;
             rec.fingerprint = fp;
 
-            // If we've seen this fingerprint, keep the instance with stronger RSSI or more details
-            if (uniqueDevices.find(fp) == uniqueDevices.end() || rssi > uniqueDevices[fp].rssi) {
-                uniqueDevices[fp] = rec;
+            // Deduplicate linearly without allocating map/tree nodes (strictly capped at 25 devices)
+            bool found = false;
+            for (auto &existing : uniqueDevices) {
+                if (existing.fingerprint == fp) {
+                    if (rssi > existing.rssi) {
+                        existing = rec;
+                    }
+                    found = true;
+                    break;
+                }
+            }
+            if (!found && uniqueDevices.size() < 25) {
+                uniqueDevices.push_back(rec);
             }
         }
 
@@ -236,8 +268,7 @@ private:
         result.ble_unique_devices = uniqueDevices.size();
 
         // Count categories and address distributions
-        for (const auto &kv : uniqueDevices) {
-            const auto &d = kv.second;
+        for (const auto &d : uniqueDevices) {
             if (d.addr_type == "public" || d.addr_type == "random_static") {
                 result.ble_public_macs++;
             } else {
@@ -422,6 +453,12 @@ private:
     }
 
     static void scanClassic(BluetoothScanResult &result, uint32_t durationMs) {
+        if (ESP.getFreeHeap() < 35000) {
+            Serial.printf("[Bluetooth] Warning: Low heap (%u bytes), skipping Classic BT scan.\n",
+                          (unsigned)ESP.getFreeHeap());
+            return;
+        }
+
         BluetoothSerial serialBT;
         if (!serialBT.begin("WIFI-Mon", true)) {
             Serial.println(F("[Bluetooth] Warning: BluetoothSerial master initialization failed."));

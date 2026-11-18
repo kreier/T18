@@ -67,7 +67,7 @@ export async function handleOta(request: Request, env: Env): Promise<Response> {
       );
     }
     // Otherwise use stable production version (fleet default)
-    targetVersion = env.STABLE_VERSION || "1.1.0";
+    targetVersion = env.STABLE_VERSION || "1.1.3";
 
     // For fleet updates, never downgrade a device running an equal or newer version
     if (compareSemVer(targetVersion, currentVersion) <= 0) {
@@ -136,7 +136,7 @@ export async function handleOta(request: Request, env: Env): Promise<Response> {
 
 // Handles binary delivery with Cloudflare R2 as primary and GitHub Releases / Pages as backup
 export async function handleFirmwareDownload(filename: string, request: Request, env: Env): Promise<Response> {
-  const stableTag = `v${env.STABLE_VERSION || "1.1.0"}`;
+  const stableTag = `v${env.STABLE_VERSION || "1.1.3"}`;
 
   // 1. Try Cloudflare R2 Storage (Zero egress fees, high speed)
   if (env.OTA_BUCKET) {

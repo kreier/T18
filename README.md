@@ -122,6 +122,10 @@ To maximize battery runtime on single-cell 18650 LiPo cells while delivering hig
 
 ## Key Architectural Features
 
+- **Settings & Fleet Management Console**:
+  Password-protected administrative suite with cryptographically signed HMAC-SHA256 session tokens. Enables operators to configure station descriptions, switch nodes between stable and canary OTA release tracks, pin explicit firmware versions, decommission nodes, execute selective historical data cleanups, and inspect live Cloudflare D1 table storage breakdown and 52-week activity heatmaps.
+- **24-Hour Station Reliability Timeline (48 × 30-Minute Intervals)**:
+  Embedded inside each monitored network card, providing instant visual health audits over the preceding 24 hours categorized by health status: 100% healthy (green), HTTP probe timeout (purple), DNS resolution timeout (amber), gateway RTT timeout (orange), DHCP lease timeout (red), association failure (charcoal), or idle (gray).
 - **In-Browser Web Serial Firmware Flasher**:
   Zero-install browser flashing leveraging the Web Serial API and ESP Web Tools. Enables operators to flash compiled universal firmware, partition tables, and bootloaders directly to ESP32 nodes over USB with real-time progress and serial console logs from Google Chrome, Microsoft Edge, Brave, or Opera without installing local toolchains or Python.
 - **Serverless Edge Storage & Analytics**:
@@ -240,13 +244,14 @@ cd worker
 npm install
 npm run d1:migrate:remote
 npm run build:docs
-npm run deploy
+npx wrangler deploy --keep-vars
 ```
 
 ---
 
 ## API Endpoints
 
+### Public & Telemetry APIs
 - `GET /` — Responsive Server-Rendered Telemetry Dashboard
 - `GET /manifest.json` — ESP Web Tools flasher manifest
 - `GET /firmware/:filename` — Binary distribution for Web Serial flashing
@@ -257,6 +262,14 @@ npm run deploy
 - `GET /api/ota` — OTA check endpoint for firmware update dispatch
 - `GET /api/ota/download/:filename` — Direct binary streaming proxy for ESP32 OTA updates
 - `GET /api/export` — Telemetry export in CSV or JSON format
+
+### Administrative APIs (Protected by HMAC Bearer Token)
+- `POST /api/admin/login` — Administrator authentication & session issuance
+- `GET /api/admin/verify` — Admin session validation
+- `GET /api/admin/overview` — D1 storage metrics, table row counts, operational span, and yearly activity heatmap
+- `POST /api/admin/station/update` — Update node description, canary OTA flag, and target firmware version
+- `POST /api/admin/station/delete` — Decommission node with optional telemetry purge
+- `POST /api/admin/data/delete` — Timeframe-based raw measurement and survey pruning
 
 ---
 

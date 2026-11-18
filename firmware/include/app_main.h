@@ -121,15 +121,19 @@ public:
         // On battery: every 10 min; Powered: every 2 min
         _led.setSolid(true);
         uint32_t scanDurationMs = 0;
-        std::vector<SurveyItem> scanResults = WifiScanner::performScan(scanDurationMs);
-        _led.setOff();
-        _ramScanDurationMs += scanDurationMs;
-        accumulateSurvey(scanResults);
+        {
+            std::vector<SurveyItem> scanResults = WifiScanner::performScan(scanDurationMs);
+            _led.setOff();
+            _ramScanDurationMs += scanDurationMs;
+            accumulateSurvey(scanResults);
+        }
 
         // 5. Bluetooth 2.4 GHz Scan (Task 2: BLE & Classic)
         // On battery: every 10 min; Powered: every 2 min
-        BluetoothScanResult btScan = BluetoothScanner::performScan(3, 2000);
-        accumulateBt(btScan);
+        {
+            BluetoothScanResult btScan = BluetoothScanner::performScan(3, 2000);
+            accumulateBt(btScan);
+        }
 
         // If in powered mode and not yet at 10-minute boundary, enter light sleep now
         if (!onBattery && !is10mBoundary) {
@@ -330,8 +334,10 @@ public:
 private:
     void clearRamAccumulators() {
         _ramSurvey.clear();
+        _ramSurvey.shrink_to_fit();
         _ramScanDurationMs = 0;
         _ramChan.clear();
+        _ramChan.shrink_to_fit();
         _ramBt = BluetoothScanResult();
     }
 
@@ -349,7 +355,7 @@ private:
                     break;
                 }
             }
-            if (!found) {
+            if (!found && _ramSurvey.size() < 60) {
                 _ramSurvey.push_back(item);
             }
         }
@@ -379,7 +385,7 @@ private:
                     break;
                 }
             }
-            if (!found) {
+            if (!found && _ramBt.ble_devices.size() < 15) {
                 _ramBt.ble_devices.push_back(dev);
             }
         }
@@ -394,7 +400,7 @@ private:
                     break;
                 }
             }
-            if (!found) {
+            if (!found && _ramBt.classic_devices.size() < 10) {
                 _ramBt.classic_devices.push_back(cdev);
             }
         }

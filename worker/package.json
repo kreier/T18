@@ -1,6 +1,6 @@
 {
   "name": "t18-worker",
-  "version": "1.1.0",
+  "version": "1.1.3",
   "description": "Cloudflare Worker & D1 backend for flynn0/T18 telemetry",
   "main": "src/index.ts",
   "scripts": {

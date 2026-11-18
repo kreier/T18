@@ -23,6 +23,8 @@ public:
 
         if (n < 0) {
             Serial.printf("[Scanner] Wi-Fi scan failed with code %d (elapsed %u ms)\n", n, (unsigned)scanDurationMs);
+            WiFi.scanDelete();
+            WiFi.mode(WIFI_OFF);
             return results;
         }
 
@@ -47,8 +49,10 @@ public:
             results.push_back(item);
         }
 
-        // Free scan memory
+        // Free scan memory and turn off Wi-Fi radio to reclaim DRAM for Bluetooth scanning
         WiFi.scanDelete();
+        WiFi.mode(WIFI_OFF);
+        delay(50);
 
         return results;
     }

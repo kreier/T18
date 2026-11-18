@@ -112,6 +112,62 @@ npm run build:docs
 # 3. Check git status to ensure docs/index.html & docs/404.html are generated
 git status
 
-# 4. Deploy worker to production Cloudflare Edge
-npx wrangler deploy
+# 4. Deploy worker to production Cloudflare Edge (use --keep-vars to preserve dashboard secrets)
+npx wrangler deploy --keep-vars
 ```
+
+---
+
+## 7. Admin & Fleet Management Architecture
+
+### Authentication & Token Model (`/api/admin/*`)
+- **Credentials**: Configured via Worker variables `ADMIN_USERNAME` and `ADMIN_PASSWORD` in Cloudflare Dashboard / `wrangler.toml`.
+- **HMAC-SHA256 Tokens**: Bearer tokens are cryptographically generated using Web Crypto API (`crypto.subtle`) with payload `${username}:${expiry}` signed by `ADMIN_PASSWORD`. Valid for 7 days.
+- **Timing-Safe Verification**: All string comparisons for usernames and passwords use constant-time byte XOR comparison (`timingSafeEqual`) to mitigate timing side-channel attacks.
+- **Client Storage**: Browser stores the token in `localStorage.getItem("t18_admin_token")` and attaches it via `Authorization: Bearer <token>`.
+- **Deployment Safety**: When deploying via Wrangler, **always use `--keep-vars`** (`npx wrangler deploy --keep-vars`) to prevent overwriting dashboard-configured secrets and passwords with default repository values.
+
+### Admin API Endpoints
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
+| `/api/admin/login` | `POST` | Public | Validates credentials; returns HMAC session token |
+| `/api/admin/verify` | `GET` | Bearer | Validates session token freshness and identity |
+| `/api/admin/overview` | `GET` | Bearer | Returns D1 database sizing, row counts, fleet span, station stats, and yearly activity (`?year=YYYY&station_id=ID`) |
+| `/api/admin/station/update` | `POST` | Bearer | Modifies station description, toggles Canary OTA track, or pins explicit target version |
+| `/api/admin/station/delete` | `POST` | Bearer | Removes station registration with optional cascade purge (`purge_data: boolean`) |
+| `/api/admin/data/delete` | `POST` | Bearer | Timeframe-based raw telemetry cleanup across `measurements`, `station_discovered_aps` (using `last_seen`), `station_bluetooth_summary`, `station_channel_utilization`, and `station_battery_history`. Preserves daily rollups. |
+
+---
+
+## 8. Frontend Design Decisions & Replicability Guidelines
+
+### CSS Namespace Separation for Heatmaps
+To avoid style collisions between the two distinct heatmap components:
+1. **24-Hour Spectrum & BLE Heatmap**:
+   - Selector: `.heatmap-cell`
+   - Properties: `height: 18px; min-width: 13px; flex: 1; border-radius: 2px;` with `gap: 2px;` and **no borders**.
+   - Hover: `transform: scale(1.25); outline: 1.5px solid #fff;`.
+2. **Year Activity Calendar Heatmap (Settings)**:
+   - Namespace: `.cal-*` (`.cal-card`, `.cal-scroll-wrap`, `.cal-grid-wrap`, `.cal-months-row`, `.cal-days-row`, `.cal-weekday-label`, `.cal-cell`, `.cal-legend`, `.cal-legend-box`).
+   - Modal window width: `.modal-window.large` is sized to `max-width: 1040px;` to fit the 53-column week grid (876px + padding) without horizontal scrollbar overflow.
+   - Legend boxes: Strict `11px × 11px` squares with dynamic dataset-driven descriptions (`0 cycles / day` to `${maxCount} cycles / day (peak)`).
+
+### 24-Hour Station Reliability Bar (48 × 30-Minute Interval Matrix)
+- Placed directly inside each observed network card below the HTTP Probe Latencies section.
+- Partitions the last 24 hours into 48 discrete 30-minute intervals (`t0 = now - 48 * 1800`).
+- **Hierarchical Failure Classification**:
+  1. `Association Failure`: `m.assoc_ms === -1` or status contains `assoc` → **Charcoal / Dark Black** (`#0f172a`, border `#475569`).
+  2. `DHCP Lease Timeout`: `m.dhcp_ms === -1` or status contains `dhcp` → **Red** (`#ef4444`).
+  3. `Gateway RTT Timeout`: `m.gateway_ms === -1` → **Orange** (`#f97316`).
+  4. `DNS v4/v6 Timeout`: `m.dns_ipv4_ms === -1` or `m.dns_ipv6_ms === -1` → **Amber** (`#f59e0b`).
+  5. `HTTP Probe Timeout`: Any of `cloudflare_ms`, `google_ms`, `microsoft_ms`, `facebook_ms`, `netflix_ms` is `-1` → **Purple** (`#8b5cf6`).
+  6. `Healthy (100% Passed)`: All probes $\ge 0$ → **Green** (`#10b981`).
+  7. `Idle / No Run`: No sample in interval → **Muted Gray** (`rgba(148, 163, 184, 0.15)`).
+
+### Collapsible Dashboard Sections
+- "Surrounding 2.4 GHz Spectrum Survey" and "Previously Detected Networks" sections use interactive headers with collapse icons (`▶` / `▼`).
+- Drawers (`#surveyTableDrawer` and `#inactiveSurveyDrawer`) are `display: none` by default to preserve vertical screen space on boot.
+
+### D1 Database Storage Estimation (No `dbstat` Support)
+- Cloudflare D1 blocks direct SQLite `dbstat` virtual table queries and `PRAGMA page_count` via API (throws `SQLITE_AUTH` or `no such table`).
+- Sizing is computed via parallel `db.batch()` counting across all 13 tables (~1.4 ms), multiplied by schema structural byte estimates (row byte averages plus B-tree index overhead), producing exact live percentages and formatted KB/MB totals.
